@@ -3,8 +3,9 @@
     python hopkinson_simulator.py simulation_cases/SHPB.toml [more.toml ...] [--out results] [--headless]
 
 Each case writes to <out>/<name>/ (name from the case file, default: the file name):
-    config.toml      copy of the case file
-    simulation.h5    gauge records and ground truth (format: README.md, "Simulation file")
+    simulation.toml  the case settings as read, and a [derived] table computed from them
+    simulation.csv   gauge records and the true interface waves (the file the analysis reads)
+    specimen.csv     specimen histories, the source wave and (SHTB) the loading end
     waves.png        gauge records and true interface waves (left: input bar, right: output bar)
 
 Three setups (``setup`` in the case file):
@@ -30,7 +31,6 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-import shutil
 import sys
 import time
 import tomllib
@@ -38,7 +38,6 @@ from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
 
-import h5py
 import numpy as np
 from scipy import interpolate, optimize, special
 
@@ -778,7 +777,7 @@ def make_specimen(cfg: dict):
 # The gauges see only the waves a1, b1 (the rigid motion carries no strain); a1 is the far-end
 # echo of b1. The bar-1 velocities (interface truth, velocity_at) include v0.
 
-FORMAT_VERSION = "hopkinson-1.0"
+FORMAT_VERSION = "hopkinson-csv-1.0"
 
 
 def deep_merge(base: dict, over: dict) -> dict:
@@ -964,7 +963,7 @@ class SHPBSimulation:
 
 
 def generate(cfg: dict) -> dict:
-    """Run one case; returns (case dict ready for save_case, solved simulation)."""
+    """Run one case; returns (case dict for the write_* functions, solved simulation)."""
     if cfg.get("setup", "shpb") == "shtb":
         sim = TensionSimulation(cfg).solve()
     else:
@@ -1197,58 +1196,173 @@ class TensionSimulation(SHPBSimulation):
 
 
 # ============================================================================================================
-# Simulation file (HDF5; from wavePINN src/wavepinn/io.py). Contents: README.md, "Simulation file".
+# Output files (plain text). Contents: README.md, "Simulation output".
 # ============================================================================================================
+# simulation.toml  the case settings as read, and a [derived] table of quantities computed from them
+# simulation.csv   time, gauge records and interface truth (the file the analysis reads)
+# specimen.csv     specimen histories, the source wave and, for the SHTB, the loading end
+# Both CSV files: '#' comment lines, then one header row, then one row per sample, comma-separated.
 
-def save_case(case: dict, path) -> None:
-    with h5py.File(path, "w") as f:
-        f.attrs["format_version"] = case["format_version"]
-        f.attrs["kind"] = case["kind"]
-        f.attrs["name"] = case["name"]
-        f.attrs["sampling_rate"] = case["sampling_rate"]
-        f.attrs["units"] = "SI (s, m, N, Pa, m/s); strain dimensionless"
-        f.attrs["sign_convention"] = (
-            "global x from input bar towards output bar; displacement and velocity positive in +x; "
-            "strain, stress and force positive in tension; specimen strain = (u2-u1)/Ls, rate = (v2-v1)/Ls; "
-            "distances measured from the respective bar-specimen interface into the bar")
-        meta = {k: case[k] for k in ("config", "derived") if k in case}
-        f.attrs["metadata_json"] = to_json(meta)
-        f.create_dataset("time", data=case["time"])
-        ch = f.create_group("channels")
-        for k, v in case["channels"].items():
-            if k == "names":
-                ch.create_dataset(k, data=np.array(v, dtype="S"))
-            else:
-                ch.create_dataset(k, data=v, compression="gzip" if np.ndim(v) > 1 else None)
-        for grp in ("source", "specimen"):
-            if grp in case:
-                g = f.create_group(grp)
-                for k, v in case[grp].items():
-                    g.create_dataset(k, data=v)
-        if "interface" in case:
-            gi = f.create_group("interface")
-            for bar, d in case["interface"].items():
-                gb = gi.create_group(bar)
-                for k, v in d.items():
-                    gb.create_dataset(k, data=v)
+SIGN_CONVENTION = ("global x from the input bar towards the output bar; displacement and velocity positive "
+                   "in +x; strain, stress and force positive in tension (SHTB contact force: compression +); "
+                   "gauge positions are distances from the respective bar-specimen interface into the bar")
+CSV_FMT = "%.12e"
+INTERFACE_KEYS = (("wave_in", ""), ("wave_out", ""), ("strain", ""), ("velocity", "m/s"),
+                  ("force_E", "N"), ("force_eff", "N"))
+SPECIMEN_UNITS = {"stress": "Pa", "strain_rate": "1/s", "force_face1": "N", "force_face2": "N",
+                  "velocity_face1": "m/s", "velocity_face2": "m/s", "contact_force": "N",
+                  "flange_velocity": "m/s"}
 
 
-def load_case(path) -> dict:
-    out = {}
-    with h5py.File(path, "r") as f:
-        for k in ("format_version", "kind", "name", "sampling_rate"):
-            out[k] = f.attrs[k]
-        out["meta"] = json.loads(f.attrs["metadata_json"])
-        out["time"] = f["time"][()]
+def _column(name: str, unit: str) -> str:
+    return f"{name}[{unit}]" if unit else name
 
-        def grp(g):
-            return {k: (grp(v) if isinstance(v, h5py.Group) else v[()]) for k, v in g.items()}
 
-        for k in ("channels", "source", "specimen", "interface"):
-            if k in f:
-                out[k] = grp(f[k])
-        out["channels"]["names"] = [n.decode() for n in out["channels"]["names"]]
-    return out
+def _write_csv(path, comments: list[str], names: list[str], cols: list) -> None:
+    with open(path, "w") as f:
+        for c in comments:
+            f.write(f"# {c}\n")
+        f.write(",".join(names) + "\n")
+        np.savetxt(f, np.column_stack(cols), fmt=CSV_FMT, delimiter=",")
+
+
+def _read_csv(path):
+    """(comment lines, column names without units, data columns as a dict of arrays)."""
+    lines = Path(path).read_text().splitlines()
+    comments = [ln[1:].strip() for ln in lines if ln.startswith("#")]
+    body = [ln for ln in lines if ln and not ln.startswith("#")]
+    names = [n.split("[")[0] for n in body[0].split(",")]
+    data = np.loadtxt(body[1:], delimiter=",", ndmin=2)
+    if data.shape[1] != len(names):
+        raise ValueError(f"{path}: {data.shape[1]} columns of data, {len(names)} names in the header")
+    return comments, names, dict(zip(names, data.T))
+
+
+def write_records_csv(case: dict, path, settings_name: str = "simulation.toml") -> None:
+    """Gauge records (gauge-averaged, then at the gauge centre) and the interface truth of both bars."""
+    ch, itf = case["channels"], case["interface"]
+    names, cols = ["t[s]"], [case["time"]]
+    for key, suffix in (("records", ""), ("records_point", "_point")):
+        for i, n in enumerate(ch["names"]):
+            names.append(n + suffix); cols.append(ch[key][i])
+    for b in ("bar1", "bar2"):
+        for key, unit in INTERFACE_KEYS:
+            names.append(_column(f"{b}_{key}", unit)); cols.append(itf[b][key])
+    comments = [
+        FORMAT_VERSION,
+        f"case {case['name']}; settings in {settings_name}; sampling rate {case['sampling_rate']:g} Hz",
+        "units: SI (s, m, N, m/s); strain dimensionless",
+        "sign convention: " + SIGN_CONVENTION,
+        "I1, I2, ...: input-bar gauges, T1, T2, ...: output-bar gauges (order as in [gauges] of the settings); "
+        "without suffix: averaged over the gauge length if [gauges] averaging = true; _point: at the gauge centre",
+        "bar1_*, bar2_*: true quantities at the bar-specimen interface; wave_in travels towards the specimen, "
+        "wave_out away from it; strain = wave_in + wave_out; velocity in the global frame; "
+        "force_E = A E strain; force_eff = A rho (omega/k)^2 strain",
+    ]
+    _write_csv(path, comments, names, cols)
+
+
+def read_records_csv(path) -> dict:
+    """Read a records file; returns name, time, sampling_rate, channels (names, bar, records, records_point)
+    and interface ({bar1, bar2}: the INTERFACE_KEYS)."""
+    comments, names, data = _read_csv(path)
+    if not comments or comments[0] != FORMAT_VERSION:
+        raise ValueError(f"{path}: not a {FORMAT_VERSION} file (first line: {comments[:1]})")
+    gauges = [n for n in names if n[:1] in "IT" and not n.endswith("_point")]
+    missing = [n for n in ["t"] + [g + "_point" for g in gauges]
+               + [f"{b}_{k}" for b in ("bar1", "bar2") for k, _ in INTERFACE_KEYS] if n not in data]
+    if missing:
+        raise ValueError(f"{path}: missing columns {missing}")
+    t = data["t"]
+    return {
+        "format_version": FORMAT_VERSION,
+        "name": comments[1].split(";")[0].removeprefix("case ").strip() if len(comments) > 1 else Path(path).stem,
+        "time": t,
+        "sampling_rate": 1.0 / (t[1] - t[0]),
+        "channels": {
+            "names": gauges,
+            "bar": np.array([1 if g[0] == "I" else 2 for g in gauges]),
+            "records": np.array([data[g] for g in gauges]),
+            "records_point": np.array([data[g + "_point"] for g in gauges]),
+        },
+        "interface": {b: {k: data[f"{b}_{k}"] for k, _ in INTERFACE_KEYS} for b in ("bar1", "bar2")},
+    }
+
+
+def write_specimen_csv(case: dict, path, settings_name: str = "simulation.toml") -> None:
+    """Specimen histories, the source wave and (SHTB) the loading end; not read by the analysis."""
+    names, cols = ["t[s]"], [case["time"]]
+    for k, v in case["specimen"].items():
+        names.append(_column(k, SPECIMEN_UNITS.get(k, ""))); cols.append(v)
+    names.append("source_eps_ref"); cols.append(case["source"]["eps_ref"])
+    comments = [
+        FORMAT_VERSION + " (specimen)",
+        f"case {case['name']}; settings in {settings_name}",
+        "units: SI (s, m, N, Pa, m/s); strain dimensionless",
+        "sign convention: " + SIGN_CONVENTION,
+        "specimen quantities as seen by the specimen model (engineering stress and strain); contact_open*: 1 "
+        "where a face (or, SHTB, the striker) is separated",
+        f"source_eps_ref: the right-going wave on the input bar at {case['source']['distance_from_interface']:g} m "
+        "from the interface (SHPB: prescribed pulse; direct impact: zero; SHTB: wave leaving the loading end)",
+    ]
+    _write_csv(path, comments, names, cols)
+
+
+def _plain(obj):
+    """numpy -> Python types, tuples -> lists, None entries of tables dropped (TOML has no null)."""
+    if isinstance(obj, dict):
+        return {str(k): _plain(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, (list, tuple, np.ndarray)):
+        return [_plain(v) for v in (obj.tolist() if isinstance(obj, np.ndarray) else obj)]
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    if isinstance(obj, (np.integer, np.floating)):
+        return obj.item()
+    return obj
+
+
+def _toml_key(k: str) -> str:
+    return k if k and all(c.isalnum() or c in "_-" for c in k) and k.isascii() else json.dumps(k)
+
+
+def _toml_value(v) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        if np.isnan(v):
+            return "nan"
+        if np.isinf(v):
+            return "inf" if v > 0 else "-inf"
+        return repr(v)
+    if isinstance(v, str):
+        return json.dumps(v, ensure_ascii=False)
+    if isinstance(v, list):
+        return "[" + ", ".join(_toml_value(x) for x in v) + "]"
+    raise TypeError(f"cannot write {type(v).__name__} to TOML")
+
+
+def dump_toml(d: dict, _path: tuple = ()) -> str:
+    """TOML text of a nested dict of scalars, strings, lists of scalars and tables (no arrays of tables)."""
+    d = _plain(d)
+    lines = [f"{_toml_key(k)} = {_toml_value(v)}" for k, v in d.items() if not isinstance(v, dict)]
+    for k, v in d.items():
+        if isinstance(v, dict):
+            path = _path + (k,)
+            lines += ["", "[" + ".".join(_toml_key(p) for p in path) + "]", dump_toml(v, path)]
+    return "\n".join(ln for ln in lines if ln is not None).rstrip("\n") + ("\n" if not _path else "")
+
+
+def write_settings_toml(cfg: dict, derived: dict, path) -> None:
+    """The case settings and a [derived] table; read back and checked against the input."""
+    doc = _plain({**cfg, "derived": derived})
+    text = (f"# Settings of the simulation case {cfg.get('name', '')}, written by hopkinson_simulator.py.\n"
+            "# All keys except [derived] are the case file as read; [derived] holds quantities computed from it.\n"
+            "# SI units throughout.\n\n" + dump_toml(doc))
+    if json.dumps(tomllib.loads(text), sort_keys=True) != json.dumps(doc, sort_keys=True):   # key order may differ
+        raise RuntimeError("the TOML writer does not reproduce the settings")
+    Path(path).write_text(text)
 
 
 def load_config(path) -> dict:
@@ -1298,7 +1412,7 @@ def plot_waves(case: dict, path):
     import matplotlib.pyplot as plt
     t = case["time"] * US
     ch, itf, sp = case["channels"], case["interface"], case["specimen"]
-    cfg = case["meta"]["config"] if "meta" in case else case["config"]
+    cfg = case["config"]
     setup = cfg.get("setup", "shpb")
     impact = setup == "direct_impact"
     fig, ax = plt.subplots(2, 2, figsize=(14, 8), sharex=True, sharey="row" if not impact else False)
@@ -1351,13 +1465,13 @@ def run(cfg_path: Path, out_root: Path, show: bool):
     out.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     case, _ = generate(cfg)
-    h5 = out / "simulation.h5"
-    save_case(case, h5)
-    shutil.copyfile(cfg_path, out / "config.toml")
+    write_settings_toml(cfg, case["derived"], out / "simulation.toml")
+    write_records_csv(case, out / "simulation.csv")
+    write_specimen_csv(case, out / "specimen.csv")
     si = case["derived"]["solve_info"]
     print(f"{cfg['name']}: simulated in {time.time() - t0:.1f} s (coupling passes {si['iterations']}, "
-          f"converged {si['converged']}) -> {h5}")
-    fig = plot_waves(load_case(h5), out / "waves.png")
+          f"converged {si['converged']}) -> {out}/simulation.csv, simulation.toml, specimen.csv")
+    fig = plot_waves(case, out / "waves.png")
     if show:
         fig.canvas.manager.set_window_title(f"{cfg['name']}: simulation")
     else:

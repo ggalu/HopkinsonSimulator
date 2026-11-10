@@ -3,29 +3,46 @@
 # Run the simulation first, then the analysis (results in results/<name>/):
 #   python hopkinson_simulator.py simulation_cases/SHPB.toml
 #   python bussac_analysis.py analysis_cases/SHPB.toml
-# SI units throughout. The analysis sees only the gauge records; the ground truth stored in the simulation
-# file is used only to compute the errors.
+# SI units throughout. Every key below is required: the analysis takes no setting from the simulation. The
+# simulation settings file is read only to compare; on start the program prints both and marks every
+# difference, then analyses with the values given here. To study a wrong bar model, material or gauge
+# position, change it here. The ground truth in the records file is used only to compute the errors.
 
-name = "SHPB_bussac"             # results folder name (default: file name without .toml)
-simulation = "results/SHPB/simulation.h5" # simulation file, relative to the project root
-records = "records"              # "records": gauge-averaged records (if [gauges] averaging = true in the
-                                 # simulation); "records_point": strain at the gauge centres
+name = "SHPB_bussac"             # results folder name
+records = "results/SHPB/simulation.csv"  # records file (gauge records and truth), relative to the project root
+settings = "results/SHPB/simulation.toml"  # simulation settings, read only for the comparison
+channels = "averaged"            # "averaged": gauge-averaged records (if [gauges] averaging = true in the
+                                 # simulation); "point": strain at the gauge centres
+setup = "shpb"                   # "shpb", "direct_impact" or "shtb" (error scaling, sign of the force plot)
+
+[bars]
+# Why the analysis needs a bar model. The separation fits two waves at the interface, one travelling towards
+# the specimen and one away from it, to the records of all gauges on a bar. For this it must know how a wave
+# changes between the interface and a gauge at the distance x: in the frequency domain the wave is multiplied
+# by exp(-i k(omega) x), where k(omega) is the wavenumber of the bar model. In a dispersive bar (models B and C)
+# the high frequencies travel more slowly than the low ones, so a non-dispersive model A applied to dispersive
+# records gives wrong separated waves.
+# The spectra are evaluated at the complex frequency s = omega - i eta (eta: the Laplace damping in
+# [separation]). The wavenumber is therefore continued analytically to k(omega - i eta). Using
+# (omega - i eta)/c(omega) instead would damp the dispersive frequencies by the wrong amount. The continuation
+# is exact for models A and B and a second-order Taylor expansion for model C.
+# The bar model also gives the interface velocity, v = -/+ (s/k) eps for each wave, and the force
+# A rho (s/k)^2 eps. For model B it gives the cut-off frequency on which f_max = "auto" is based.
+# The material enters through c0 = sqrt(E/rho), and for models B and C also through nu and the radius.
+bar_model = "B"                  # A: 1D wave equation, B: Love rod, C: Pochhammer-Chree (1st mode)
+material = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }  # input bar
+material_transmitted = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }  # output bar
+                                 # E [Pa], rho [kg/m^3], nu [-], radius [m]; optional inner_radius [m] for a tube
+
+[gauges]                         # assigned in order to the gauges I1, I2, ... and T1, T2, ... of the records file
+incident = [0.3, 0.85]           # positions on the input bar [m from the interface]
+transmitted = [0.3, 0.85]        # positions on the output bar [m from the interface]
+gauge_length = 2.0e-3            # active gauge length [m]
 
 [separation]
 eta = 1000.0                     # Laplace damping [1/s]: removes the singularities at DC and at the
                                  # frequencies n c / (2 D) of two gauges a distance D apart. Larger: better
                                  # conditioned, but errors grow like exp(eta t) late in the record
-# f_max = 200.0e3                # band limit [Hz]; default 0.8 x the Love cut-off for model B
+f_max = "auto"                   # band limit [Hz]; "auto": 0.8 x the Love cut-off for model B, none for A and C
 gauge_length_correction = true   # include the averaging over the gauge length in the gauge model
 valid_margin = 20.0e-6           # errors are evaluated for t < T - x_max/c0 - valid_margin [s]
-
-# What the analysis assumes about the bars and the gauges. Omitted: the values of the simulation.
-# Give them to study the effect of a wrong bar model, material or gauge position.
-[bars]
-# bar_model = "A"                # A: 1D wave equation, B: Love rod, C: Pochhammer-Chree (1st mode)
-# material = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }
-# material_transmitted = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }
-
-[gauges]                         # distances from the interface [m], one per gauge of the simulation
-# incident = [0.301, 0.85]
-# transmitted = [0.3, 0.85]

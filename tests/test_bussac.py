@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from bussac_analysis import run_bussac, separate_case, wavenumber_laplace
+from bussac_analysis import compare_settings, run_bussac, separate_case, wavenumber_laplace
 from hopkinson_simulator import BarMaterial, BarModel, LoveRod, deep_merge, generate, load_config
 
 CASES = Path(__file__).resolve().parents[1] / "simulation_cases"
@@ -58,19 +58,39 @@ def test_love_laplace_wavenumber_taylor_matches_exact():
     assert np.all(exact.imag[1:] < 0)
 
 
-def test_analysis_case_overrides(tmp_path):
-    """Defaults reproduce the simulation's setup; a wrong gauge position or bar model changes the result."""
-    from hopkinson_simulator import load_case, save_case
-    case, _ = generate(deep_merge(SHPB, {"sampling": {"duration": 700e-6}}))
-    save_case(case, tmp_path / "s.h5")
-    case = load_case(tmp_path / "s.h5")
-    base = {"separation": {"eta": 1000.0}}
-    r0, _, tv, _, bars = run_bussac(case, base)
-    assert bars["bar_model"] == "B"
-    valid = case["time"] < tv
-    w = case["interface"]["bar1"]["wave_out"]
+def full_acfg(sim_cfg: dict) -> dict:
+    """A complete analysis case with the values of a simulation case."""
+    b, g = sim_cfg["bars"], sim_cfg["gauges"]
+    acfg = {"name": "test", "records": "simulation.csv", "settings": "simulation.toml", "channels": "averaged",
+            "setup": sim_cfg["setup"],
+            "bars": {"bar_model": sim_cfg["bar_model"], "material": dict(b["material"]),
+                     "material_transmitted": dict(b.get("material_transmitted", b["material"]))},
+            "gauges": {k: g[k] for k in ("incident", "transmitted", "gauge_length")},
+            "separation": {"eta": 1000.0, "f_max": "auto", "gauge_length_correction": True,
+                           "valid_margin": 20e-6}}
+    if sim_cfg["setup"] == "direct_impact":
+        acfg["impact"] = {"velocity": sim_cfg["impact"]["velocity"]}
+    return acfg
+
+
+def test_analysis_case_settings_take_effect(tmp_path):
+    """The analysis uses its own settings: with those of the simulation it reports no differences; a wrong
+    gauge position or bar model is reported and changes the result."""
+    from hopkinson_simulator import read_records_csv, write_records_csv
+    cfg = deep_merge(SHPB, {"sampling": {"duration": 700e-6}})
+    case, _ = generate(cfg)
+    write_records_csv(case, tmp_path / "s.csv")
+    data = read_records_csv(tmp_path / "s.csv")
+    base = full_acfg(cfg)
+    assert not [r for r in compare_settings(base, cfg) if r["status"] == "differs"]
+    r0, tv, _, _ = run_bussac(data, base)
+    valid = data["time"] < tv
+    w = data["interface"]["bar1"]["wave_out"]
     e0 = np.max(np.abs(r0["bar1"]["wave_out"] - w)[valid])
-    r1, *_ = run_bussac(case, {**base, "gauges": {"incident": [0.305, 0.85]}})
-    r2, *_ = run_bussac(case, {**base, "bars": {"bar_model": "A"}})
-    for r in (r1, r2):
+    wrong_gauge = deep_merge(base, {"gauges": {"incident": [0.305, 0.85]}})
+    wrong_model = deep_merge(base, {"bars": {"bar_model": "A"}})
+    for acfg, key in ((wrong_gauge, "gauges.incident"), (wrong_model, "bars.bar_model")):
+        diff = [r["key"] for r in compare_settings(acfg, cfg) if r["status"] == "differs"]
+        assert diff == [key], diff
+        r, *_ = run_bussac(data, acfg)
         assert np.max(np.abs(r["bar1"]["wave_out"] - w)[valid]) > 3 * e0

@@ -6,18 +6,21 @@ so that a wave-separation method can be checked against a known answer. Three se
 Hopkinson pressure bar (SHPB), the direct-impact pressure bar, and the split Hopkinson tension bar (SHTB). Each
 example case has two strain gauges on the input bar and two on the output bar.
 
-The two programs are separate. `hopkinson_simulator.py` reads a simulation case and writes a simulation file.
-`bussac_analysis.py` reads an analysis case, which names a simulation file and the settings of the separation,
-and compares the separated waves with the stored truth.
+The two programs are separate, and all their files are plain text. `hopkinson_simulator.py` reads a simulation
+case and writes the gauge records with the true interface waves (a CSV file) and its settings (a TOML file).
+`bussac_analysis.py` reads an analysis case, which defines every setting the analysis uses, separates the
+records and compares the separated waves with the stored truth. It reads the simulation settings only to show
+where its own settings differ from them.
 
 The code was extracted from the wavePINN project on 2026-11-10. The simulator and the separation of the
-pressure setups are unchanged; on the SHPB and direct-impact cases both programs give results identical to
-those of wavePINN. The specimen of the tension bar is new (see "SHTB").
+pressure setups are unchanged. On the SHPB and direct-impact cases both programs gave results identical to those
+of wavePINN while the records were stored in HDF5. The text files store 13 significant digits, which changes the
+errors of the analysis by less than 10⁻⁹ of their values. The specimen of the tension bar is new (see "SHTB").
 
 ## Layout
 ```
-hopkinson_simulator.py   bar models, propagation, pulses, specimens, the three setups, file format, figure
-bussac_analysis.py       Bussac separation, errors against the truth, figure
+hopkinson_simulator.py   bar models, propagation, pulses, specimens, the three setups, output files, figure
+bussac_analysis.py       analysis case check, comparison of settings, Bussac separation, errors, figure
 simulation_cases/        SHPB.toml, direct_impact.toml, SHTB.toml
 analysis_cases/          SHPB.toml, direct_impact.toml, SHTB.toml
 tests/                   pytest tests of both programs
@@ -25,22 +28,22 @@ results/                 output (not in git)
 ```
 
 ## Running
-The programs need Python 3.11 or later with numpy, scipy, matplotlib and h5py (pytest for the tests). In the
+The programs need Python 3.11 or later with numpy, scipy and matplotlib (pytest for the tests). In the
 wavePINN conda environment:
 ```bash
 python hopkinson_simulator.py simulation_cases/SHPB.toml          # -> results/SHPB/
 python bussac_analysis.py analysis_cases/SHPB.toml                # -> results/SHPB_bussac/
 python hopkinson_simulator.py simulation_cases/*.toml --headless  # all cases, figures saved but not shown
 python bussac_analysis.py analysis_cases/*.toml --headless
-python -m pytest -q                                               # 20 tests, about 50 s
+python -m pytest -q                                               # 26 tests, about 50 s
 ```
 Without `--headless` the figures are also shown, and the program ends when all windows are closed.
 `--out <dir>` changes the results root.
 
 | program | output in `results/<name>/` |
 |---|---|
-| simulator | `config.toml` (copy of the case file), `simulation.h5` (records and truth), `waves.png` (gauge records and true interface waves) |
-| analysis | `bussac.json` (settings, assumed bars and gauges, end of the valid window, errors), `bussac.png` (records, separated waves, force and velocity against the truth), `separated.txt` (time and the separated quantities of both bars) |
+| simulator | `simulation.toml` (settings), `simulation.csv` (gauge records and interface truth), `specimen.csv` (specimen, source and loading-end histories), `waves.png` (gauge records and true interface waves) |
+| analysis | `bussac.json` (analysis case, comparison with the simulation settings, end of the valid window, errors), `bussac.png` (records, separated waves, force and velocity against the truth), `separated.txt` (time and the separated quantities of both bars) |
 
 ## How the simulator works
 The bars are not discretised in space. The simulator solves for the two strain waves at each bar–specimen
@@ -108,45 +111,79 @@ the direct impact, `[striker]`, `[striker.material]` and `[flange]` for the SHTB
 `[specimen.material]`, `[sampling]` and `[coupling]`. Every parameter is commented in the example files. To make a
 new case, copy one, rename it and edit it. SI units throughout; strain, stress and force are positive in tension.
 
-## Simulation file (`simulation.h5`, format `hopkinson-1.0`)
-Global x points from the input bar towards the output bar; displacements and velocities are positive in +x.
-Gauge positions are distances from the respective bar–specimen interface into the bar.
+## Simulation output
+The simulator writes three text files into `results/<name>/`. Global x points from the input bar towards the
+output bar; displacements and velocities are positive in +x. Strain, stress and force are positive in tension.
+Gauge positions are distances from the respective bar–specimen interface into the bar. SI units throughout.
 
-| path | meaning |
+**`simulation.toml`** holds the case file as it was read (without its comments) and a `[derived]` table of
+quantities computed from it: for each bar the model, the material, c0, the radius of gyration r_g and the
+cut-off frequency of model B; the specimen; for the SHTB the striker, the flange mass and the nominal incident
+strain; round-trip times; and the solver information (number of coupling passes, the change in each pass).
+
+**`simulation.csv`** (format `hopkinson-csv-1.0`) is the file the analysis reads. It begins with six comment
+lines that start with `#`: the format name, the case name and sampling rate, the units, the sign convention and
+the meaning of the columns. One header row and one row per sample follow, comma-separated, with 13 significant
+digits. Units are given in brackets in the header where a column is not a strain. The file can be read without
+the project code, for example with `numpy.loadtxt(path, delimiter=",", skiprows=7)`.
+
+| column | meaning |
 |---|---|
-| attributes `format_version`, `kind`, `name`, `sampling_rate` | `hopkinson-1.0`, `synthetic`, case name, Hz |
-| attribute `metadata_json` | JSON: `config` (the case file as read) and `derived` (bar models, cut-off frequency, solver information, …) |
-| `/time` | time [s], uniform |
-| `/channels/records` | gauge strain, averaged over the gauge length if `[gauges] averaging = true` |
-| `/channels/records_point` | strain at the gauge centre |
-| `/channels/names`, `bar`, `distance_from_interface`, `gauge_length` | `I1, I2, T1, T2`; 1 = input, 2 = output bar; [m]; [m] |
-| `/source/eps_ref`, `/source/distance_from_interface` | the right-going wave where it is defined: the prescribed pulse (SHPB), zero (direct impact), the wave leaving the loading end (SHTB) |
-| `/interface/bar{1,2}/wave_in`, `wave_out` | strain wave arriving at and leaving the interface (bar 1: wave_in travels +x; bar 2: wave_in travels −x) |
-| `/interface/bar{1,2}/strain`, `velocity` | wave_in + wave_out; particle velocity (model-consistent; direct impact: bar 1 includes v0) |
-| `/interface/bar{1,2}/force_E`, `force_eff` | A·E·ε and A·ρ(ω/k)²ε (model B: exactly A·σ_eff of Love theory; model A: equal to force_E) |
-| `/specimen/stress`, `strain`, `strain_rate`, `plastic_strain` | specimen model output (engineering, tension +) |
-| `/specimen/force_face{1,2}`, `velocity_face{1,2}`, `contact_open_face{1,2}` | forces and velocities as seen by the specimen model; 1 where a face is separated from its bar |
-| `/specimen/contact_force`, `flange_velocity`, `striker_wave_in`, `striker_wave_out`, `contact_open` | SHTB only: the loading end (contact force compression +; 1 where the striker is separated from the flange) |
+| `t[s]` | time, uniform |
+| `I1, I2, T1, T2` | gauge strain, averaged over the gauge length if `[gauges] averaging = true`; I: input bar, T: output bar, numbered in the order of `[gauges] incident` and `transmitted` |
+| `I1_point, …, T2_point` | strain at the gauge centre |
+| `bar{1,2}_wave_in`, `wave_out` | strain wave arriving at and leaving the interface (bar 1: wave_in travels +x; bar 2: wave_in travels −x) |
+| `bar{1,2}_strain`, `velocity[m/s]` | wave_in + wave_out; particle velocity (consistent with the bar model; direct impact: bar 1 includes v0) |
+| `bar{1,2}_force_E[N]`, `force_eff[N]` | A·E·ε and A·ρ(ω/k)²ε (model B: exactly A·σ_eff of Love theory; model A: equal to force_E) |
+
+The gauge positions and the gauge length are not in this file. They are settings, and they are in
+`simulation.toml` and in the analysis case.
+
+**`specimen.csv`** has the same layout. The analysis does not read it.
+
+| column | meaning |
+|---|---|
+| `stress[Pa]`, `strain`, `strain_rate[1/s]`, `plastic_strain` | specimen model output (engineering, tension +) |
+| `force_face{1,2}[N]`, `velocity_face{1,2}[m/s]`, `contact_open_face{1,2}` | forces and velocities as seen by the specimen model; 1 where a face is separated from its bar |
+| `contact_force[N]`, `flange_velocity[m/s]`, `striker_wave_out`, `striker_wave_in`, `contact_open` | SHTB only: the loading end (contact force compression +; 1 where the striker is separated from the flange) |
+| `source_eps_ref` | the right-going wave where it is defined: the prescribed pulse (SHPB), zero (direct impact), the wave leaving the loading end (SHTB) |
 
 ## Analysis case file
+Every key is required; the analysis takes no setting from the simulation. The example files in
+`analysis_cases/` carry the values of the matching simulation cases and comment every key.
 ```toml
-name = "SHPB_bussac"                       # results/<name>/
-simulation = "results/SHPB/simulation.h5"  # relative to the project root
-records = "records"                        # or "records_point"
+name = "SHPB_bussac"                         # results/<name>/
+records = "results/SHPB/simulation.csv"      # records file, relative to the project root
+settings = "results/SHPB/simulation.toml"    # simulation settings, read only for the comparison
+channels = "averaged"                        # "averaged" or "point" (strain at the gauge centres)
+setup = "shpb"                               # "shpb", "direct_impact" or "shtb"
+# [impact]                                   # required for setup = "direct_impact", refused otherwise
+# velocity = 5.0                             # impact velocity v0 [m/s]
+[bars]
+bar_model = "B"                              # A, B or C
+material = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }              # input bar
+material_transmitted = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }  # output bar
+                                             # inner_radius [m] is optional (tube; default 0)
+[gauges]
+incident = [0.3, 0.85]                       # [m from the interface], in the order I1, I2, …
+transmitted = [0.3, 0.85]                    # in the order T1, T2, …
+gauge_length = 2.0e-3                        # [m]
 [separation]
-eta = 1000.0                               # Laplace damping [1/s]
-# f_max = 200.0e3                          # band limit [Hz]; default 0.8 x the Love cut-off
+eta = 1000.0                                 # Laplace damping [1/s]
+f_max = "auto"                               # band limit [Hz], inf, or "auto" (0.8 x the Love cut-off for model B, none otherwise)
 gauge_length_correction = true
-valid_margin = 20.0e-6
-[bars]                                     # optional: what the analysis assumes
-# bar_model = "A"
-# material = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }
-[gauges]                                   # optional: assumed gauge positions [m]
-# incident = [0.301, 0.85]
+valid_margin = 20.0e-6                       # [s]
 ```
-By default the analysis assumes the bar model, materials and gauge positions of the simulation. The `[bars]`
-and `[gauges]` tables override them, so that the effect of a wrong model or a wrong gauge position can be
-studied on the same simulation file.
+A missing, unknown or wrongly typed key stops the program, with a message that names all such keys. The
+number of positions in `[gauges]` must match the number of I and T columns in the records file.
+
+On start, the analysis prints a table of its settings next to the simulation settings. Each row has the status
+"same", "≠ DIFFERS" or "analysis only" (for the file paths and the `[separation]` keys, which have no
+counterpart in the simulation). A short explanation of these statuses is printed under the table. Numbers count
+as the same when they agree to a relative 10⁻¹². On a terminal the
+rows that differ are drawn in bold red. A summary line gives the number of differences. The analysis then runs
+with its own values, so that the effect of a wrong model, material or gauge position can be studied on the same
+records. The table is also stored in `bussac.json` under `comparison`.
 
 The separation is the frequency-domain least-squares method of Bussac, Collet, Gary and Othman (J. Mech. Phys.
 Solids 50, 2002, 321–349). The spectra are evaluated at the complex frequency ω − iη, and the wavenumber is
@@ -161,7 +198,7 @@ input-bar force. For the direct impact each bar is scaled by its own peaks, beca
 smaller than the output-bar strain.
 
 ### Results of the example cases
-With the default settings on the gauge-averaged records (model B), the largest relative error of the separated
+With the settings of the example analysis cases on the gauge-averaged records (model B), the largest relative error of the separated
 waves within the valid window is 1.1·10⁻² for the SHPB and the direct impact, and 5.9·10⁻³ for the SHTB. The
 errors of A·σ_eff are larger (up to 0.30 for the direct impact), because this operator weights the high
 frequencies by (ω/k)², where the separation is least accurate. These numbers rest on single runs of
@@ -179,7 +216,10 @@ as a spring), checks the Love dispersion relation, the Love equation of motion a
 of a tone burst, checks the Pochhammer–Chree solver against published values and its limits, and checks that
 the gauge records stored in a file are the propagations of the stored interface waves.
 `tests/test_bussac.py` checks that the separation is exact for model A (SHPB and SHTB) and for model C with the
-continued wavenumber, and that the overrides of the analysis case take effect.
+continued wavenumber, and that the settings of the analysis case take effect and are reported when they differ.
+`tests/test_files.py` checks that the settings TOML and the records CSV of all three setups are read back as
+written, that an incomplete analysis case is refused with the names of the keys, and that the comparison marks
+exactly the settings that differ.
 
 ## Left out from wavePINN
 Measurement artefacts (gain, offset, drift, noise, spikes, clipping) and the preprocessing that removes them,

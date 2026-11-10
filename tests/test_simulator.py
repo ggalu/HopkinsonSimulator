@@ -9,8 +9,9 @@ from scipy.integrate import solve_ivp
 from scipy.signal import hilbert
 
 from hopkinson_simulator import (BarMaterial, LoveRod, PochhammerChree, SHPBSimulation, Spectral, deep_merge,
-                                 force_eff, generate, load_case, load_config, pc_first_mode_table, propagate,
-                                 rayleigh_speed_ratio, save_case, time_derivative, transfer)
+                                 force_eff, generate, load_config, pc_first_mode_table, propagate,
+                                 rayleigh_speed_ratio, read_records_csv, time_derivative, transfer,
+                                 write_records_csv)
 
 CASES = Path(__file__).resolve().parents[1] / "simulation_cases"
 SHPB = load_config(CASES / "SHPB.toml")
@@ -208,20 +209,21 @@ def test_transfer_functions_compose_exactly():
 
 @pytest.mark.parametrize("cfg,tol", [(SHPB, 1e-4), (SHTB, 3e-4)], ids=["SHPB", "SHTB"])
 def test_gauges_are_forward_propagations_of_interface_waves(cfg, tol, tmp_path):
-    """Check on the stored (time-truncated) files. Re-propagating a record truncated at the end
+    """Check on the stored (time-truncated) records file. Re-propagating a record truncated at the end
     of the window creates small band-limited ringing, hence the tolerance. It is larger for the SHTB,
-    whose records still end at 20-30 % of their peak."""
+    whose records still end at 20-30 % of their peak. The gauge positions are those of the settings."""
     case, sim = generate(cfg)
-    save_case(case, tmp_path / "c.h5")
-    c = load_case(tmp_path / "c.h5")
+    write_records_csv(case, tmp_path / "c.csv")
+    c = read_records_csv(tmp_path / "c.csv")
     ch, itf = c["channels"], c["interface"]
+    positions = list(cfg["gauges"]["incident"]) + list(cfg["gauges"]["transmitted"])
     for i in range(4):
-        bar, d = int(ch["bar"][i]), float(ch["distance_from_interface"][i])
+        bar, d = int(ch["bar"][i]), float(positions[i])
         m = sim.model1 if bar == 1 else sim.model2
         win, wout = itf[f"bar{bar}"]["wave_in"], itf[f"bar{bar}"]["wave_out"]
         incoming = ch["records_point"][i] - propagate(sim.sp_out, m, wout, d)
         scale = max(np.max(np.abs(win)), np.max(np.abs(wout)))
         err = np.max(np.abs(propagate(sim.sp_out, m, incoming, d) - win)) / scale
         assert err < tol, (i, err)
-    assert np.array_equal(c["channels"]["records"], case["channels"]["records"])
-    assert c["meta"]["config"]["setup"] == cfg["setup"]
+    rec = case["channels"]["records"]
+    assert np.max(np.abs(c["channels"]["records"] - rec)) < 1e-11 * np.max(np.abs(rec))   # 12 digits in the file

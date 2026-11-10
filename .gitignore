@@ -3,3 +3,13 @@ __pycache__/
 *.py[cod]
 *.h5
 .pytest_cache/
+# LaTeX build products of the reports (the PDF is built locally with make)
+reports/**/*.aux
+reports/**/*.fdb_latexmk
+reports/**/*.fls
+reports/**/*.log
+reports/**/*.out
+reports/**/*.toc
+reports/**/*.synctex.gz
+reports/**/revision.tex
+reports/**/report.pdf

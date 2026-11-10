@@ -18,17 +18,17 @@ bar_model = "B"                  # A: 1D wave equation, B: Love rod, C: Pochhamm
 
 # ---------------------------------------------------------------- bars
 [bars]
-length_incident = 2.7            # input bar length, flange to specimen [m]
-length_transmitted = 2.7         # output bar length, specimen to free end [m]
+length_input = 2.7               # input bar length, flange to specimen [m]
+length_output = 2.7              # output bar length, specimen to free end [m]
 far_end_reflections = true       # true: free far end of the output bar; false: absorbing
 
-[bars.material]                  # Al 7075, nominal handbook values; used for both bars
+[bars.material_input]            # Al 7075, nominal handbook values; used for both bars
 E = 71.7e9                       # Young's modulus [Pa]
 rho = 2810.0                     # density [kg/m^3]
 nu = 0.33                        # Poisson's ratio (enters the dispersion of models B and C)
 radius = 8.0e-3                  # bar radius [m] (16 mm diameter)
-# A different output-bar material can be given in a [bars.material_transmitted] table
-# with the same keys; it defaults to [bars.material].
+# A different output-bar material can be given in a [bars.material_output] table
+# with the same keys; it defaults to [bars.material_input].
 
 # ---------------------------------------------------------------- striker
 [striker]                        # tube sliding over the input bar; its far (right) end is free
@@ -53,8 +53,8 @@ rho = 7850.0                     # density [kg/m^3]; mass = rho * pi d^2/4 * len
 
 # ---------------------------------------------------------------- strain gauges
 [gauges]
-incident = [0.3, 0.85]           # gauge positions on the input bar [m from the specimen face]
-transmitted = [0.3, 0.85]        # gauge positions on the output bar [m from the specimen face]
+input = [0.3, 0.85]              # gauge positions on the input bar [m from the specimen face]
+output = [0.3, 0.85]             # gauge positions on the output bar [m from the specimen face]
 gauge_length = 2.0e-3            # active gauge length [m]
 averaging = true                 # true: records are averaged over the gauge length
 

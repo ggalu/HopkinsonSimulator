@@ -2,12 +2,16 @@
 
     python bussac_analysis.py analysis_cases/SHPB.toml [more.toml ...] [--out results] [--headless]
 
-Each analysis case names a simulation file written by hopkinson_simulator.py and the settings of the
-separation. By default the analysis assumes the bar model, bar material and gauge positions of the
-simulation; the case file can override them, to study the effect of a wrong model or a wrong gauge position
-without changing the simulation. Output in <out>/<name>/:
-    bussac.json     settings, end of the valid window, errors relative to the ground truth
+Each analysis case names the records file (simulation.csv) and the settings file (simulation.toml) written by
+hopkinson_simulator.py, and defines every setting the analysis uses: the setup, the bar model and materials,
+the gauge positions and length, and the separation. Nothing is taken from the simulation. The settings file is
+read only to compare: on start the analysis settings are printed next to the simulation settings, and every
+difference is marked. The analysis then runs with its own values, so that the effect of a wrong model or a
+wrong gauge position can be studied on the same records. Output in <out>/<name>/:
+    bussac.json     analysis case, comparison with the simulation, end of the valid window, errors
     bussac.png      analysed records, separated waves, interface force and velocity, each against the truth
+    equilibrium.png separated forces at the input-bar and output-bar interfaces and their relative imbalance,
+                    to judge the force equilibrium of the specimen
     separated.txt   time and the separated quantities of both bars
 
 Errors are max and rms over the VALID window t < T - max over both bars of (x_max/c0) - valid_margin: the
@@ -22,13 +26,14 @@ from __future__ import annotations
 import argparse
 import copy
 import sys
+import tomllib
 from pathlib import Path
 
 import numpy as np
 
 from hopkinson_simulator import (COLORS, INVALID, PM, US, BarMaterial, BarModel, LoveRod, WaveEq1D,
-                                 apply_style, deep_merge, gauge_average_factor, load_case, load_config,
-                                 make_bar_model, next_pow2, to_json)
+                                 apply_style, gauge_average_factor, make_bar_model, next_pow2,
+                                 read_records_csv, to_json)
 
 ROOT = Path(__file__).resolve().parent
 
@@ -56,9 +61,8 @@ ROOT = Path(__file__).resolve().parent
 # Local coordinate per bar: x >= 0 from the interface INTO the bar. "plus" travels away from
 # the specimen (= outgoing wave b), "minus" travels toward it (= incoming wave a). Gauge k:
 #     E_k(s) = G_k(s) [P(s) exp(-i k(s) x_k) + M(s) exp(+i k(s) x_k)],   s = omega - i eta.
-# Strain tension positive. Velocities are returned in the GLOBAL frame (x from the incident
-# toward the transmitted bar), using ``outward`` = -1 for the incident bar, +1 for the
-# transmitted bar.
+# Strain tension positive. Velocities are returned in the GLOBAL frame (x from the input
+# toward the output bar), using ``outward`` = -1 for the input bar, +1 for the output bar.
 #
 # Regularisation: eta > 0 (units 1/s) removes the singularity at DC and, for two gauges a
 # distance D apart, at f = n c / (2 D): the determinant there is 4 sinh^2(eta D / c) instead of 0.
@@ -68,30 +72,48 @@ ROOT = Path(__file__).resolve().parent
 def wavenumber_laplace(model: BarModel, omega: np.ndarray, eta: float) -> np.ndarray:
     """k(omega - i eta), Im k < 0 (decaying in the direction of travel).
 
-    Exact for Models A and B; for other models (Pochhammer-Chree) a second-order Taylor
-    expansion k(w) - i eta k'(w) - eta^2 k''(w)/2 on the (uniform) omega grid.
+    Exact for Models A and B, elastic or Kelvin-Voigt (1 + i omega tau becomes 1 + i s tau = 1 + eta tau
+    + i omega tau, which has no zeros for eta > 0); for other models (Pochhammer-Chree) a second-order
+    Taylor expansion k(w) - i eta k'(w) - eta^2 k''(w)/2 on the (uniform) omega grid.
     """
     omega = np.asarray(omega, dtype=float)
     s = omega - 1j * eta
     m = model.mat
+    kv = 1 + 1j * s * m.tau                         # Kelvin-Voigt factor; 1 for an elastic bar
     if isinstance(model, WaveEq1D):
-        return s / m.c0
+        return s / m.c0 if m.tau == 0 else s / (m.c0 * np.sqrt(kv))
     if isinstance(model, LoveRod):
-        # k^2 = s^2 / (c0^2 - nu^2 rg^2 s^2); for omega > 0, eta > 0 the radicand has Im > 0,
+        # k^2 = s^2 / (c0^2 kv - nu^2 rg^2 s^2); for omega > 0, eta > 0 the radicand has Im > 0,
         # so the principal root is continuous and gives Im k < 0 (propagating and evanescent)
-        return s / np.sqrt(m.c0 ** 2 - (m.nu * model.rg * s) ** 2)
-    k = np.real(model.wavenumber(omega))
+        return s / np.sqrt(m.c0 ** 2 * kv - (m.nu * model.rg * s) ** 2)
+    k = model.wavenumber(omega)
     dw = omega[1] - omega[0]
     k1 = np.gradient(k, dw)
     k2 = np.gradient(k1, dw)
     return k - 1j * eta * k1 - 0.5 * eta ** 2 * k2
 
 
-def default_f_max(model: BarModel) -> float:
-    """Band limit: 0.8 x Love cut-off for Model B, none otherwise."""
-    if isinstance(model, LoveRod):
-        return 0.8 * model.omega_cutoff / (2 * np.pi)
-    return np.inf
+# Kelvin-Voigt bars: the wave leaving the interface is damped by exp(-kappa x) on its way to a gauge at x,
+# so its reconstruction at the interface multiplies by exp(+kappa x). "auto" keeps this amplification below
+# AUTO_MAX_AMPLIFICATION at the farthest gauge. The value is a choice for noise-free synthetic records, not a
+# derived limit: on the example cases the separation stayed usable up to about 1e3-1e4 and became unstable
+# above. Measured records, with noise, need a lower value.
+AUTO_MAX_AMPLIFICATION = 1.0e3
+
+
+def default_f_max(model: BarModel, x_max: float = 0.0, f_nyquist: float = np.inf) -> float:
+    """Band limit "auto": 0.8 x Love cut-off for Model B, none otherwise; for a Kelvin-Voigt bar in addition
+    the frequency at which exp(kappa x_max) reaches AUTO_MAX_AMPLIFICATION."""
+    f = 0.8 * model.omega_cutoff / (2 * np.pi) if isinstance(model, LoveRod) else np.inf
+    if model.mat.tau > 0 and x_max > 0:
+        f_top = min(f, f_nyquist)
+        if not np.isfinite(f_top):
+            raise ValueError("a Kelvin-Voigt bar needs a finite Nyquist frequency for f_max = \"auto\"")
+        w = 2 * np.pi * np.linspace(0.0, f_top, 200001)
+        over = np.flatnonzero(-np.imag(model.wavenumber(w)) * x_max > np.log(AUTO_MAX_AMPLIFICATION))
+        if over.size:
+            f = w[over[0] - 1] / (2 * np.pi)
+    return f
 
 
 def separate_spectra(t, signals, positions, model: BarModel, eta: float = 1000.0, f_max: float | None = None,
@@ -120,7 +142,7 @@ def separate_spectra(t, signals, positions, model: BarModel, eta: float = 1000.0
     if not np.allclose(np.diff(t), dt, rtol=1e-6):
         raise ValueError("t must be uniformly sampled")
     n_fft = int(n_fft or next_pow2(4 * n))
-    f_max = default_f_max(model) if f_max is None else float(f_max)
+    f_max = default_f_max(model, float(x.max()), 0.5 / dt) if f_max is None else float(f_max)
 
     omega = 2 * np.pi * np.fft.rfftfreq(n_fft, dt)
     band = omega <= 2 * np.pi * f_max
@@ -166,9 +188,9 @@ def separate(t, signals, positions, model: BarModel, eta: float = 1000.0, f_max:
     signals : (n_g, N) strain records; positions : (n_g,) distances from the interface [m].
     model : bar model (A, B or C) used for the separation.
     eta : exponential-window damping [1/s].
-    f_max : band limit [Hz]; None -> default_f_max(model).
+    f_max : band limit [Hz]; None -> default_f_max (the rule of f_max = "auto").
     gauge_length : gauge length(s) [m]; 0 -> point gauges.
-    outward : global direction of the bar's local +x axis (-1 incident bar, +1 transmitted bar).
+    outward : global direction of the bar's local +x axis (-1 input bar, +1 output bar).
 
     Returns dict with time histories at the interface:
         plus, minus (strain waves; plus = away from the specimen),
@@ -194,7 +216,8 @@ def separate(t, signals, positions, model: BarModel, eta: float = 1000.0, f_max:
 
 def separate_case(case: dict, bar_models: dict, eta: float = 1000.0, f_max: float | None = None,
                   use_gauge_length: bool = True, records_key: str = "records"):
-    """Apply ``separate`` to both bars of a loaded case (io.load_case format).
+    """Apply ``separate`` to both bars of a case (the dict of read_records_csv or generate, with
+    distance_from_interface and gauge_length in its channel table).
 
     bar_models: {1: model_bar1, 2: model_bar2}. Returns {"bar1": ..., "bar2": ...} with the keys
     of ``separate`` plus wave_in (= minus, toward the specimen) and wave_out (= plus).
@@ -215,55 +238,214 @@ def separate_case(case: dict, bar_models: dict, eta: float = 1000.0, f_max: floa
 
 
 # ============================================================================================================
-# Analysis of a simulation file (adapted from wavePINN src/wavepinn/analysis.py)
+# Analysis case: required settings, comparison with the simulation settings
 # ============================================================================================================
-SEPARATION_DEFAULTS = {"eta": 1000.0, "f_max": None, "gauge_length_correction": True, "valid_margin": 20e-6}
+# The analysis case defines every setting the analysis uses; nothing is taken from the simulation. The
+# simulation settings (simulation.toml) are read only to print the differences.
+
+NUMBER, TEXT, FLAG, POSITIONS = "number", "text", "true/false", "list of numbers"
+MATERIAL_KEYS = {"E": NUMBER, "rho": NUMBER, "nu": NUMBER, "radius": NUMBER}
+OPTIONAL_KEYS = {f"bars.{t}.{k}": NUMBER for t in ("material_input", "material_output")
+                 for k in ("inner_radius", "tau")}
+ANALYSIS_KEYS = {
+    "name": TEXT, "records": TEXT, "settings": TEXT,
+    "channels": ("averaged", "point"),
+    "setup": ("shpb", "direct_impact", "shtb"),
+    "impact": {"velocity": NUMBER},                       # required for setup = "direct_impact" only
+    "bars": {"bar_model": ("A", "B", "C"), "material_input": MATERIAL_KEYS, "material_output": MATERIAL_KEYS},
+    "gauges": {"input": POSITIONS, "output": POSITIONS, "gauge_length": NUMBER},
+    "separation": {"eta": NUMBER, "f_max": "number or \"auto\"", "gauge_length_correction": FLAG,
+                   "valid_margin": NUMBER},
+}
 
 
-def assumed_setup(case: dict, acfg: dict):
-    """Bar models {1, 2} and channel table that the analysis assumes.
+def _is_number(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
 
-    Defaults: the bar model, materials and gauge positions stored in the simulation file. Overrides from the
-    analysis case: [bars] bar_model, material, material_transmitted; [gauges] incident, transmitted."""
-    sim_cfg = case["meta"]["config"]
-    bars = deep_merge({"bar_model": sim_cfg["bar_model"], "material": sim_cfg["bars"]["material"],
-                       "material_transmitted": sim_cfg["bars"].get("material_transmitted",
-                                                                   sim_cfg["bars"]["material"])},
-                      acfg.get("bars", {}))
-    if "material" in acfg.get("bars", {}) and "material_transmitted" not in acfg["bars"] \
-            and "material_transmitted" not in sim_cfg["bars"]:
-        bars["material_transmitted"] = bars["material"]          # one material for both bars, as in the simulation
-    models = {1: make_bar_model(bars["bar_model"], BarMaterial(**bars["material"])),
-              2: make_bar_model(bars["bar_model"], BarMaterial(**bars["material_transmitted"]))}
-    ch = copy.deepcopy(case["channels"])
-    for bar, key in ((1, "incident"), (2, "transmitted")):
-        pos = acfg.get("gauges", {}).get(key)
-        if pos is None:
-            continue
+
+def _type_ok(v, kind) -> bool:
+    if isinstance(kind, tuple):
+        return v in kind
+    return {NUMBER: _is_number, TEXT: lambda x: isinstance(x, str), FLAG: lambda x: isinstance(x, bool),
+            POSITIONS: lambda x: isinstance(x, list) and len(x) > 0 and all(_is_number(y) for y in x),
+            "number or \"auto\"": lambda x: _is_number(x) or x == "auto"}[kind](v)
+
+
+def _kind_text(kind) -> str:
+    return " or ".join(f'"{k}"' for k in kind) if isinstance(kind, tuple) else kind
+
+
+def check_analysis_config(acfg: dict) -> None:
+    """Raise ValueError naming every missing, unknown or wrongly typed key of an analysis case."""
+    errors = []
+
+    def walk(d, spec, path):
+        for k, kind in spec.items():
+            key = path + k
+            if k == "impact" and not path and acfg.get("setup") != "direct_impact":
+                if k in d:
+                    errors.append(f"[impact] is only used with setup = \"direct_impact\"")
+                continue
+            if k not in d:
+                errors.append(f"missing: {key} ({'table' if isinstance(kind, dict) else _kind_text(kind)})")
+            elif isinstance(kind, dict):
+                if isinstance(d[k], dict):
+                    walk(d[k], kind, key + ".")
+                else:
+                    errors.append(f"{key} must be a table")
+            elif not _type_ok(d[k], kind):
+                errors.append(f"{key} = {d[k]!r}: expected {_kind_text(kind)}")
+        for k, v in d.items():
+            key = path + k
+            if k in spec:
+                continue
+            if key in OPTIONAL_KEYS:
+                if not _type_ok(v, OPTIONAL_KEYS[key]):
+                    errors.append(f"{key} = {v!r}: expected {OPTIONAL_KEYS[key]}")
+            else:
+                errors.append(f"unknown key: {key}")
+
+    walk(acfg, ANALYSIS_KEYS, "")
+    if errors:
+        raise ValueError("the analysis case is incomplete or wrong:\n    " + "\n    ".join(errors))
+
+
+def _same(a, b) -> bool:
+    if _is_number(a) and _is_number(b):
+        return bool(np.isclose(a, b, rtol=1e-12, atol=0.0) or a == b)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+    return a == b
+
+
+def compare_settings(acfg: dict, sim_cfg: dict) -> list[dict]:
+    """One row per analysis setting: key, analysis value, simulation value (None: no counterpart) and status
+    ("same", "differs" or "analysis only")."""
+    rows = []
+
+    def row(key, a, s, counterpart=True):
+        status = "analysis only" if not counterpart else ("same" if s is not None and _same(a, s) else "differs")
+        rows.append({"key": key, "analysis": a, "simulation": s, "status": status})
+
+    sim_bars, sim_g = sim_cfg.get("bars", {}), sim_cfg.get("gauges", {})
+    row("name", acfg["name"], None, False)
+    row("records", acfg["records"], None, False)
+    row("settings", acfg["settings"], None, False)
+    averaging = sim_g.get("averaging", True)
+    sim_channels = "averaged" if averaging else "point"   # without averaging both columns hold the centre strain
+    row("channels", acfg["channels"], acfg["channels"] if acfg["channels"] == "point" else sim_channels)
+    row("setup", acfg["setup"], sim_cfg.get("setup", "shpb"))
+    if "impact" in acfg:
+        row("impact.velocity", acfg["impact"]["velocity"], sim_cfg.get("impact", {}).get("velocity"))
+    row("bars.bar_model", acfg["bars"]["bar_model"], sim_cfg.get("bar_model"))
+    for table in ("material_input", "material_output"):
+        sim_mat = sim_bars.get(table, sim_bars.get("material_input", {}))   # material_output defaults to input
+        mat = acfg["bars"][table]
+        for k in (*MATERIAL_KEYS, "inner_radius", "tau"):
+            optional = k in ("inner_radius", "tau")         # default 0: solid, elastic bar
+            row(f"bars.{table}.{k}", mat.get(k, 0.0), sim_mat.get(k, 0.0 if optional else None))
+    for k in ("input", "output", "gauge_length"):
+        row(f"gauges.{k}", acfg["gauges"][k], sim_g.get(k))
+    for k, v in acfg["separation"].items():
+        row(f"separation.{k}", v, None, False)
+    return rows
+
+
+def _fmt(v) -> str:
+    if v is None:
+        return "—"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, float):
+        return f"{v:.10g}"
+    if isinstance(v, list):
+        return "[" + ", ".join(_fmt(x) for x in v) + "]"
+    return str(v)
+
+
+STATUS_LEGEND = """
+  How to read the table: "analysis" is the value this analysis uses (from its case file); "simulation" is the
+  value of the same setting in the simulation settings file. The status column says:
+    same           both values agree (numbers to a relative 1e-12).
+    ≠ DIFFERS      the analysis assumes something other than what was simulated, e.g. a different bar model
+                   or gauge position. The analysis still runs, with its own value; this is intended when the
+                   effect of a wrong assumption is studied, and an error otherwise.
+    analysis only  a setting of the analysis alone (output name, file paths, separation parameters); the
+                   simulation has no such setting, so there is nothing to compare.
+    —              the simulation settings file does not contain this setting.
+"""
+
+
+def print_comparison(rows: list[dict], title: str, stream=None) -> int:
+    """Print the settings table; differences are marked (and drawn in bold red on a terminal). Returns the
+    number of differences."""
+    stream = stream or sys.stdout
+    color = hasattr(stream, "isatty") and stream.isatty()
+    head = ("setting", "analysis", "simulation", "status")
+    cells = [(r["key"], _fmt(r["analysis"]), _fmt(r["simulation"]) if r["status"] != "analysis only" else "",
+              "≠ DIFFERS" if r["status"] == "differs" else r["status"]) for r in rows]
+    w = [max(len(c[i]) for c in [head, *cells]) for i in range(4)]
+    print(title, file=stream)
+    print("  " + "  ".join(h.ljust(w[i]) for i, h in enumerate(head)), file=stream)
+    group = None
+    for r, c in zip(rows, cells):
+        g = r["key"].rsplit(".", 1)[0] if "." in r["key"] else ""
+        if group is not None and g != group:
+            print("", file=stream)
+        group = g
+        line = ("  " + "  ".join(x.ljust(w[i]) for i, x in enumerate(c))).rstrip()
+        if r["status"] == "differs" and color:
+            line = f"\033[1;31m{line}\033[0m"
+        print(line, file=stream)
+    print(STATUS_LEGEND, file=stream)
+    n = sum(r["status"] == "differs" for r in rows)
+    summary = (f"{n} setting{'s' if n != 1 else ''} differ{'s' if n == 1 else ''} from the simulation; "
+               f"the analysis uses its own values" if n else "no differences from the simulation settings")
+    if n and color:
+        summary = f"\033[1;31m{summary}\033[0m"
+    print(summary + "\n", file=stream)
+    return n
+
+
+# ============================================================================================================
+# Analysis of a records file (adapted from wavePINN src/wavepinn/analysis.py)
+# ============================================================================================================
+
+def assumed_setup(data: dict, acfg: dict):
+    """Bar models {1, 2} and channel table of the analysis case: gauge positions and gauge length from
+    [gauges], assigned in order to the I* (input bar) and O* (output bar) columns of the records file."""
+    b = acfg["bars"]
+    models = {1: make_bar_model(b["bar_model"], BarMaterial(**b["material_input"])),
+              2: make_bar_model(b["bar_model"], BarMaterial(**b["material_output"]))}
+    ch = copy.deepcopy(data["channels"])
+    ch["distance_from_interface"] = np.zeros(len(ch["names"]))
+    ch["gauge_length"] = np.full(len(ch["names"]), float(acfg["gauges"]["gauge_length"]))
+    for bar, key in ((1, "input"), (2, "output")):
+        pos = acfg["gauges"][key]
         sel = np.flatnonzero(ch["bar"] == bar)
         if len(pos) != len(sel):
-            raise ValueError(f"[gauges] {key}: {len(pos)} positions given, the simulation has {len(sel)} gauges")
+            raise ValueError(f"[gauges] {key}: {len(pos)} positions given, the records file has {len(sel)} "
+                             f"gauges on bar {bar} ({', '.join(ch['names'][i] for i in sel)})")
         ch["distance_from_interface"][sel] = np.asarray(pos, dtype=float)
-    return models, ch, bars
+    return models, ch
 
 
-def run_bussac(case: dict, acfg: dict):
-    """Separate both bars of a loaded simulation file.
+def run_bussac(data: dict, acfg: dict):
+    """Separate both bars of a records file (read_records_csv) with the settings of a checked analysis case.
 
-    Returns (result, settings, end of the valid window [s], analysed records, assumed bars)."""
-    s = deep_merge(SEPARATION_DEFAULTS, acfg.get("separation", {}))
-    models, ch, bars = assumed_setup(case, acfg)
-    key = acfg.get("records", "records")
-    work = {**case, "channels": ch}
-    res = separate_case(work, models, eta=s["eta"], f_max=s["f_max"],
+    Returns (result, end of the valid window [s], analysed records, assumed channel table)."""
+    s = acfg["separation"]
+    models, ch = assumed_setup(data, acfg)
+    key = "records" if acfg["channels"] == "averaged" else "records_point"
+    res = separate_case({**data, "channels": ch}, models, eta=float(s["eta"]),
+                        f_max=None if s["f_max"] == "auto" else float(s["f_max"]),
                         use_gauge_length=s["gauge_length_correction"], records_key=key)
-    sim_cfg = case["meta"]["config"]
-    if sim_cfg.get("setup", "shpb") == "direct_impact":
-        res["bar1"]["velocity"] = res["bar1"]["velocity"] + float(sim_cfg["impact"]["velocity"])
-    t = case["time"]
+    if acfg["setup"] == "direct_impact":
+        res["bar1"]["velocity"] = res["bar1"]["velocity"] + float(acfg["impact"]["velocity"])
+    t = data["time"]
     delay = max(np.max(ch["distance_from_interface"][ch["bar"] == b]) / models[b].mat.c0 for b in (1, 2))
-    t_valid = t[-1] - delay - s["valid_margin"]
-    return res, s, t_valid, ch[key], bars
+    t_valid = t[-1] - delay - float(s["valid_margin"])
+    return res, t_valid, ch[key], ch
 
 
 def metrics(case: dict, res: dict, valid, per_bar: bool = False) -> dict:
@@ -293,13 +475,12 @@ def summary_line(e: dict) -> str:
             f"  N_eff max {mx('bar1_force_eff', 'bar2_force_eff'):.1e}")
 
 
-def plot_bussac(case: dict, res: dict, rec, ch: dict, t_valid: float, title: str, path):
+def plot_bussac(case: dict, res: dict, rec, ch: dict, t_valid: float, title: str, path, setup: str):
     """Bussac result against the truth, saved to ``path``; returns the (open) figure. Left column input bar,
     right column output bar. Row 1: analysed records; row 2: separated waves; row 3: force and velocity."""
     import matplotlib.pyplot as plt
     t = case["time"] * US
     itf = case["interface"]
-    setup = case["meta"]["config"].get("setup", "shpb")
     sgn, sense = (1.0, "tension +") if setup == "shtb" else (-1.0, "compression +")
     pre = "" if sgn > 0 else "−"
     fig, ax = plt.subplots(3, 2, figsize=(14, 11), sharex=True)
@@ -342,6 +523,68 @@ def plot_bussac(case: dict, res: dict, rec, ch: dict, t_valid: float, title: str
     return fig
 
 
+# Force equilibrium of the specimen: the forces at the two bar-specimen interfaces, N1 (input bar) and N2 (output
+# bar), both A E eps, the force through which the simulated specimen is coupled to the bars. The imbalance
+# (N1 - N2) / Nm with the mean Nm = (N1 + N2)/2 is evaluated only where |Nm| is at least EQUILIBRIUM_MIN_FORCE
+# times its peak in the valid window, because the ratio is meaningless while the forces are small (rise, unloading).
+EQUILIBRIUM_MIN_FORCE = 0.05
+
+
+def force_imbalance(n1, n2, valid, min_fraction: float = EQUILIBRIUM_MIN_FORCE):
+    """(N1 - N2)/Nm (NaN where not evaluated) and its largest magnitude in the valid window."""
+    nm = 0.5 * (n1 + n2)
+    peak = np.max(np.abs(nm[valid])) if np.any(valid) else 0.0
+    use = valid & (np.abs(nm) >= min_fraction * peak) & (peak > 0)
+    r = np.full(nm.shape, np.nan)
+    r[use] = (n1[use] - n2[use]) / nm[use]
+    return r, float(np.max(np.abs(r[use]))) if np.any(use) else float("nan")
+
+
+def equilibrium(case: dict, res: dict, valid) -> dict:
+    """Largest relative force imbalance of the separated and of the true interface forces."""
+    itf = case["interface"]
+    _, sep = force_imbalance(res["bar1"]["force_E"], res["bar2"]["force_E"], valid)
+    _, true = force_imbalance(itf["bar1"]["force_E"], itf["bar2"]["force_E"], valid)
+    return {"force": "A E eps", "min_force_fraction": EQUILIBRIUM_MIN_FORCE,
+            "max_relative_imbalance_separated": sep, "max_relative_imbalance_truth": true}
+
+
+def plot_equilibrium(case: dict, res: dict, t_valid: float, title: str, path, setup: str):
+    """Separated interface forces of the input and the output bar against each other, and their relative
+    imbalance, to judge the force equilibrium of the specimen; saved to ``path``, returns the (open) figure."""
+    import matplotlib.pyplot as plt
+    t = case["time"] * US
+    itf = case["interface"]
+    sgn, sense = (1.0, "tension +") if setup == "shtb" else (-1.0, "compression +")
+    valid = case["time"] < t_valid
+    fig, ax = plt.subplots(2, 1, figsize=(11, 8), sharex=True, gridspec_kw={"height_ratios": [3, 2]})
+    for bar, side, c in ((1, "input bar", COLORS[0]), (2, "output bar", COLORS[1])):
+        b = f"bar{bar}"
+        ax[0].plot(t, sgn * itf[b]["force_E"] / 1e3, color=c, lw=2.2, alpha=0.3, label=f"{side}, truth")
+        ax[0].plot(t, sgn * res[b]["force_E"] / 1e3, color=c, lw=1.0, label=f"{side}, Bussac")
+    ax[0].set(title=f"A) Interface forces A·E·ε ({sense})", ylabel="force [kN]")
+    r_sep, m_sep = force_imbalance(res["bar1"]["force_E"], res["bar2"]["force_E"], valid)
+    r_true, m_true = force_imbalance(itf["bar1"]["force_E"], itf["bar2"]["force_E"], valid)
+    ax[1].plot(t, 100 * r_true, color="k", lw=2.2, alpha=0.3, label=f"truth (max {100 * m_true:.1f} %)")
+    ax[1].plot(t, 100 * r_sep, color=COLORS[4], lw=1.0, label=f"Bussac (max {100 * m_sep:.1f} %)")
+    for y in (-5.0, 5.0):
+        ax[1].axhline(y, color="k", ls="--", lw=0.8, label="±5 %" if y > 0 else None)
+    ax[1].axhline(0.0, color="#888888", lw=0.8)
+    ax[1].set(title=f"B) Relative imbalance (N_input − N_output) / mean, where |mean| ≥ "
+                    f"{100 * EQUILIBRIUM_MIN_FORCE:.0f} % of its peak", xlabel="t [µs]", ylabel="imbalance [%]")
+    finite = r_sep[np.isfinite(r_sep)]
+    if finite.size:
+        lim = min(max(10.0, 110 * np.max(np.abs(finite))), 100.0)
+        ax[1].set_ylim(-lim, lim)
+    for a in ax:
+        a.axvspan(t_valid * US, t[-1], color=INVALID, lw=0, zorder=0)
+        a.legend(fontsize=8, loc="best")
+    fig.suptitle(f"{title}: force equilibrium of the specimen; grey: outside the valid window")
+    fig.tight_layout()
+    fig.savefig(path)
+    return fig
+
+
 def write_separated(path, t, res, t_valid):
     cols, names = [t * US], ["t[us]"]
     for b in ("bar1", "bar2"):
@@ -357,34 +600,51 @@ def write_separated(path, t, res, t_valid):
 # Command line
 # ============================================================================================================
 
+def _project_path(p: str) -> Path:
+    return Path(p) if Path(p).is_absolute() else ROOT / p
+
+
 def run(acfg_path: Path, out_root: Path, show: bool):
     import matplotlib.pyplot as plt
-    acfg = load_config(acfg_path)
-    sim_path = (ROOT / acfg["simulation"]) if not Path(acfg["simulation"]).is_absolute() else Path(acfg["simulation"])
-    if not sim_path.exists():
-        sys.exit(f"{acfg['name']}: simulation file {sim_path} not found; run the simulation case first, e.g.\n"
-                 f"    python hopkinson_simulator.py simulation_cases/<case>.toml")
-    case = load_case(sim_path)
-    res, s, t_valid, rec, bars = run_bussac(case, acfg)
-    setup = case["meta"]["config"].get("setup", "shpb")
-    err = metrics(case, res, case["time"] < t_valid, per_bar=setup == "direct_impact")
+    acfg = tomllib.loads(Path(acfg_path).read_text())
+    try:
+        check_analysis_config(acfg)
+    except ValueError as e:
+        sys.exit(f"{acfg_path}: {e}")
+    rec_path, set_path = _project_path(acfg["records"]), _project_path(acfg["settings"])
+    for p in (rec_path, set_path):
+        if not p.exists():
+            sys.exit(f"{acfg['name']}: {p} not found; run the simulation case first, e.g.\n"
+                     f"    python hopkinson_simulator.py simulation_cases/<case>.toml")
+    rows = compare_settings(acfg, tomllib.loads(set_path.read_text()))
+    print_comparison(rows, f"{acfg['name']}: settings of {acfg_path} against the simulation settings {set_path}")
+    data = read_records_csv(rec_path)
+    try:
+        res, t_valid, rec, ch = run_bussac(data, acfg)
+    except ValueError as e:
+        sys.exit(f"{acfg_path}: {e}")
+    setup = acfg["setup"]
+    err = metrics(data, res, data["time"] < t_valid, per_bar=setup == "direct_impact")
     out = out_root / acfg["name"]
     out.mkdir(parents=True, exist_ok=True)
-    _, ch, _ = assumed_setup(case, acfg)
-    report = {"simulation": str(sim_path), "records": acfg.get("records", "records"),
-              "separation": {**s, "f_max_used": [res["bar1"]["f_max"], res["bar2"]["f_max"]]},
-              "assumed_bars": bars,
-              "assumed_gauges": {"bar": ch["bar"], "distance_from_interface": ch["distance_from_interface"]},
-              "t_valid_end_us": t_valid * US, "errors": err}
+    eq = equilibrium(data, res, data["time"] < t_valid)
+    report = {"records": str(rec_path), "settings": str(set_path), "analysis_case": acfg,
+              "f_max_used": [res["bar1"]["f_max"], res["bar2"]["f_max"]],
+              "comparison": rows, "t_valid_end_us": t_valid * US, "errors": err, "equilibrium": eq}
     (out / "bussac.json").write_text(to_json(report))
-    write_separated(out / "separated.txt", case["time"], res, t_valid)
-    title = f"{acfg['name']}: Bussac with model {bars['bar_model']} on '{acfg.get('records', 'records')}' of {case['name']}"
-    fig = plot_bussac(case, res, rec, ch, t_valid, title, out / "bussac.png")
-    if show:
-        fig.canvas.manager.set_window_title(f"{acfg['name']}: Bussac analysis")
-    else:
-        plt.close(fig)
-    print(f"{acfg['name']}: valid up to {t_valid * US:.0f} µs; {summary_line(err)} -> {out}")
+    write_separated(out / "separated.txt", data["time"], res, t_valid)
+    title = (f"{acfg['name']}: Bussac with model {acfg['bars']['bar_model']} on the {acfg['channels']} records "
+             f"of {data['name']}")
+    figs = {"Bussac analysis": plot_bussac(data, res, rec, ch, t_valid, title, out / "bussac.png", setup),
+            "force equilibrium": plot_equilibrium(data, res, t_valid, title, out / "equilibrium.png", setup)}
+    for name, fig in figs.items():
+        if show:
+            fig.canvas.manager.set_window_title(f"{acfg['name']}: {name}")
+        else:
+            plt.close(fig)
+    print(f"{acfg['name']}: valid up to {t_valid * US:.0f} µs; {summary_line(err)}; force imbalance max "
+          f"{100 * eq['max_relative_imbalance_separated']:.1f} % (truth "
+          f"{100 * eq['max_relative_imbalance_truth']:.1f} %) -> {out}")
 
 
 def main():

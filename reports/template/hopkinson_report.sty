@@ -1,0 +1,194 @@
+% hopkinson_report.sty -- layout of a HopkinsonSimulator report.
+%
+% A copy of the layout of the sigmaSPH technical reports (sigmaSPH/reports/template/sigmasph_report.sty):
+% the same palette, sans-serif headings in navy and steel blue, and a running head and foot with a steel
+% rule. Changed from that file: the project name in the head, the foot, the PDF properties and the title
+% page; the emblem (an input bar, a specimen and an output bar instead of a particle cluster); and the
+% identifier, which is HopkinsonSimulator-TR-<number> and has no register. A report is a KOMA-Script
+% article (scrartcl), so its top level is the section.
+%
+% Usage:
+%
+%   \documentclass[11pt,a4paper,numbers=noenddot]{scrartcl}
+%   \usepackage{hopkinson_report}
+%   \reporttitle{Title of the study}          % may contain \\
+%   \reportshorttitle{Short title}            % running foot and PDF title (default: none)
+%   \reportsubtitle{Optional subtitle}
+%   \reportauthor{Author Name}
+%   \reportdate{28 October 2026}
+%   \reportnumber{2026-01}                    % optional; identifier HopkinsonSimulator-TR-2026-01
+%   \reportcover{figures/cover.png}           % optional cover image
+%   \begin{document}
+%   \makereporttitle
+%   ...
+%
+% The report's Makefile finds this file through TEXINPUTS, so the report needs no copy of it.
+%
+% The revision printed on the title page is not set by hand: the Makefile writes revision.tex from git
+% before each build (the last commit that touched the report folder or this template, marked when either
+% has uncommitted changes), and this file reads it.
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{hopkinson_report}[2026/11/10 HopkinsonSimulator report layout (from the sigmaSPH reports)]
+
+% -----------------------------------------------------------------------------
+% Packages
+% -----------------------------------------------------------------------------
+\RequirePackage[utf8]{inputenc}
+\RequirePackage[T1]{fontenc}
+\RequirePackage{lmodern}
+\RequirePackage{microtype}
+\RequirePackage[top=2.5cm, bottom=2.5cm, left=2.5cm, right=2.5cm, headheight=25pt]{geometry}
+\RequirePackage{amsmath, amssymb, mathtools}
+\RequirePackage{booktabs, tabularx, array}
+\RequirePackage{xcolor}
+\RequirePackage{graphicx}
+\RequirePackage{fancyhdr}
+\RequirePackage{enumitem}
+\RequirePackage{caption}
+\RequirePackage[section]{placeins}   % floats stay within their section
+\RequirePackage{xurl}                % paths and URLs break anywhere
+
+% -----------------------------------------------------------------------------
+% Palette (as in the manual)
+% -----------------------------------------------------------------------------
+\definecolor{primary}{RGB}{11, 48, 92}       % deep navy
+\definecolor{secondary}{RGB}{45, 95, 140}    % steel slate
+\definecolor{accent}{RGB}{185, 40, 40}       % muted crimson
+\definecolor{cardbg}{RGB}{246, 249, 252}     % very light slate blue
+\definecolor{cardframe}{RGB}{150, 185, 215}  % cool steel border
+\definecolor{textdark}{RGB}{25, 25, 25}
+
+% -----------------------------------------------------------------------------
+% Report fields
+% -----------------------------------------------------------------------------
+\makeatletter
+\newcommand*{\sph@title}{}
+\newcommand*{\sph@shorttitle}{}
+\newcommand*{\sph@subtitle}{}
+\newcommand*{\sph@author}{}
+\newcommand*{\sph@date}{\today}
+\newcommand*{\sph@number}{}
+\newcommand*{\sph@revision}{}
+\newcommand*{\sph@cover}{}
+\newcommand{\reporttitle}[1]{\renewcommand*{\sph@title}{#1}}
+\newcommand{\reportshorttitle}[1]{\renewcommand*{\sph@shorttitle}{#1}}
+\newcommand{\reportsubtitle}[1]{\renewcommand*{\sph@subtitle}{#1}}
+\newcommand{\reportauthor}[1]{\renewcommand*{\sph@author}{#1}}
+\newcommand{\reportdate}[1]{\renewcommand*{\sph@date}{#1}}
+\newcommand{\reportnumber}[1]{\renewcommand*{\sph@number}{#1}}
+\newcommand{\reportrevision}[1]{\renewcommand*{\sph@revision}{#1}}
+% The identifier, or nothing if the report has no number yet.
+\newcommand*{\reportid}{\ifx\sph@number\@empty\else HopkinsonSimulator-TR-\sph@number\fi}
+\newcommand{\reportcover}[1]{\renewcommand*{\sph@cover}{#1}}
+\makeatother
+
+% -----------------------------------------------------------------------------
+% Hyperref
+% -----------------------------------------------------------------------------
+\RequirePackage[
+    colorlinks=true,
+    linkcolor=primary,
+    citecolor=primary,
+    urlcolor=secondary,
+    bookmarks=true,
+    bookmarksnumbered=true
+]{hyperref}
+\makeatletter
+\AtBeginDocument{%
+  \hypersetup{pdftitle={\sph@shorttitle}, pdfauthor={\sph@author},
+              pdfsubject={HopkinsonSimulator Report}}}
+\makeatother
+
+% -----------------------------------------------------------------------------
+% Headers and footers
+% -----------------------------------------------------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0.6pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{secondary}\leaders\hrule height \headrulewidth\hfill}}
+\makeatletter
+% The head names the report rather than the section: fancyhdr's \leftmark is the last section
+% that starts on a page, which on a page with two sections names the wrong one at the top.
+\fancyhead[L]{\textcolor{secondary}{\textsf{\small\sph@shorttitle}}}
+\fancyhead[R]{\textcolor{secondary}{\textsf{\small\ifx\sph@number\@empty HopkinsonSimulator\else\reportid\fi}}}
+\fancyfoot[L]{\textcolor{gray}{\textsf{\scriptsize HopkinsonSimulator | \sph@date}}}
+\fancyfoot[R]{\textcolor{primary}{\textsf{\small\textbf{\thepage}}}}
+\makeatother
+\fancypagestyle{plain}{%
+    \fancyhf{}%
+    \renewcommand{\headrulewidth}{0pt}%
+    \fancyfoot[R]{\textcolor{primary}{\textsf{\small\textbf{\thepage}}}}%
+}
+
+% -----------------------------------------------------------------------------
+% Headings and captions
+% -----------------------------------------------------------------------------
+\addtokomafont{section}{\color{primary}\sffamily\bfseries}
+\addtokomafont{subsection}{\color{secondary}\sffamily\bfseries}
+\addtokomafont{subsubsection}{\color{textdark}\sffamily\bfseries}
+\addtokomafont{paragraph}{\color{textdark}\sffamily\bfseries}
+\captionsetup{font=small, labelfont={bf,sf,color=primary}}
+
+\emergencystretch=2em
+
+% -----------------------------------------------------------------------------
+% Title page
+% -----------------------------------------------------------------------------
+% The page is drawn with TikZ at fixed positions on the paper, so that it does not depend on the
+% text margins: a double vertical rule along the left edge, the identifier, date and revision
+% flush right at the top, the title in bold Helvetica in the upper half, and the emblem and
+% wordmark at the bottom left.
+\RequirePackage{tikz}
+\makeatletter
+\newcommand*{\sph@titlefont}{\fontfamily{phv}\selectfont}
+% The emblem: an input bar and an output bar on one axis, with the specimen between them in the
+% accent colour.
+\newcommand{\sph@emblem}{%
+  \begin{tikzpicture}[x=1mm, y=1mm]
+    \fill[primary] (-11,-1.6) rectangle (-1.4,1.6);
+    \fill[accent] (-1.1,-1.2) rectangle (1.1,1.2);
+    \fill[secondary] (1.4,-1.6) rectangle (11,1.6);
+  \end{tikzpicture}}
+\newcommand{\makereporttitle}{%
+  \begin{titlepage}
+    \thispagestyle{empty}
+    \begin{tikzpicture}[remember picture, overlay]
+      % double rule along the left edge
+      \fill[primary] ([xshift=22mm, yshift=-15mm]current page.north west)
+        rectangle ([xshift=23.6mm, yshift=15mm]current page.south west);
+      \fill[secondary] ([xshift=25mm, yshift=-15mm]current page.north west)
+        rectangle ([xshift=25.5mm, yshift=15mm]current page.south west);
+      % identifier, date and revision, flush right at the top
+      \node[anchor=north east, align=right, font=\sph@titlefont\small, text=textdark]
+        at ([xshift=-25mm, yshift=-22mm]current page.north east)
+        {\ifx\sph@number\@empty\else\reportid\\\fi
+         \sph@date
+         \ifx\sph@revision\@empty\else\\\textcolor{gray}{Revision \sph@revision}\fi};
+      % title, subtitle and author
+      \node[anchor=north west, align=left, text width=135mm, inner sep=0pt]
+        at ([xshift=45mm, yshift=-85mm]current page.north west)
+        {{\sph@titlefont\fontsize{26}{31}\selectfont\bfseries\spaceskip=0.3em\relax\color{textdark}\sph@title\par}
+         \ifx\sph@subtitle\@empty\else
+           \vspace{5mm}{\sph@titlefont\Large\color{secondary}\sph@subtitle\par}
+         \fi
+         \vspace{12mm}{\sph@titlefont\Large\color{textdark}\sph@author\par}
+         \ifx\sph@cover\@empty\else
+           \vspace{12mm}\includegraphics[width=120mm, height=70mm, keepaspectratio]{\sph@cover}\par
+         \fi};
+      % emblem and wordmark at the bottom left
+      \node[anchor=south west, inner sep=0pt]
+        at ([xshift=45mm, yshift=28mm]current page.south west)
+        {\raisebox{-1mm}{\sph@emblem}\hspace{4mm}%
+         \begin{tabular}[b]{@{}l@{}}
+           {\sph@titlefont\fontsize{18}{20}\selectfont\bfseries\color{primary}HopkinsonSimulator}\\[1mm]
+           {\sph@titlefont\scriptsize\color{secondary}REPORT}
+         \end{tabular}};
+    \end{tikzpicture}
+  \end{titlepage}%
+}
+\makeatother
+
+% The revision written by the Makefile, if there is one.
+\InputIfFileExists{revision.tex}{}{}
+
+\endinput

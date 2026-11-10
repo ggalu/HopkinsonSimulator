@@ -35,7 +35,7 @@ python hopkinson_simulator.py simulation_cases/SHPB.toml          # -> results/S
 python bussac_analysis.py analysis_cases/SHPB.toml                # -> results/SHPB_bussac/
 python hopkinson_simulator.py simulation_cases/*.toml --headless  # all cases, figures saved but not shown
 python bussac_analysis.py analysis_cases/*.toml --headless
-python -m pytest -q                                               # 26 tests, about 50 s
+python -m pytest -q                                               # 27 tests, about 50 s
 ```
 Without `--headless` the figures are also shown, and the program ends when all windows are closed.
 `--out <dir>` changes the results root.
@@ -105,8 +105,10 @@ about 260 /s, and its plastic strain reaches about 0.43 at the end of the 2 ms r
 and the striker material are assumptions. The specimen model has no necking or failure.
 
 ## Simulation case file
-One self-contained, commented TOML file per case. The tables are: `[bars]` and `[bars.material]` (optional
-`[bars.material_transmitted]`), `[gauges]`, the loading (`[source]` and `[pulse]` for the SHPB, `[impact]` for
+One self-contained, commented TOML file per case. The tables are: `[bars]` (with the bar lengths
+`length_input` and `length_output`) and `[bars.material_input]` (optional
+`[bars.material_output]`, which defaults to the input-bar material), `[gauges]` (with the gauge positions
+`input` and `output`), the loading (`[source]` and `[pulse]` for the SHPB, `[impact]` for
 the direct impact, `[striker]`, `[striker.material]` and `[flange]` for the SHTB), `[specimen]` and
 `[specimen.material]`, `[sampling]` and `[coupling]`. Every parameter is commented in the example files. To make a
 new case, copy one, rename it and edit it. SI units throughout; strain, stress and force are positive in tension.
@@ -130,8 +132,8 @@ the project code, for example with `numpy.loadtxt(path, delimiter=",", skiprows=
 | column | meaning |
 |---|---|
 | `t[s]` | time, uniform |
-| `I1, I2, T1, T2` | gauge strain, averaged over the gauge length if `[gauges] averaging = true`; I: input bar, T: output bar, numbered in the order of `[gauges] incident` and `transmitted` |
-| `I1_point, …, T2_point` | strain at the gauge centre |
+| `I1, I2, O1, O2` | gauge strain, averaged over the gauge length if `[gauges] averaging = true`; I: input bar, O: output bar, numbered in the order of `[gauges] input` and `output` |
+| `I1_point, …, O2_point` | strain at the gauge centre |
 | `bar{1,2}_wave_in`, `wave_out` | strain wave arriving at and leaving the interface (bar 1: wave_in travels +x; bar 2: wave_in travels −x) |
 | `bar{1,2}_strain`, `velocity[m/s]` | wave_in + wave_out; particle velocity (consistent with the bar model; direct impact: bar 1 includes v0) |
 | `bar{1,2}_force_E[N]`, `force_eff[N]` | A·E·ε and A·ρ(ω/k)²ε (model B: exactly A·σ_eff of Love theory; model A: equal to force_E) |
@@ -161,12 +163,12 @@ setup = "shpb"                               # "shpb", "direct_impact" or "shtb"
 # velocity = 5.0                             # impact velocity v0 [m/s]
 [bars]
 bar_model = "B"                              # A, B or C
-material = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }              # input bar
-material_transmitted = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }  # output bar
+material_input = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }        # input bar
+material_output = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }       # output bar
                                              # inner_radius [m] is optional (tube; default 0)
 [gauges]
-incident = [0.3, 0.85]                       # [m from the interface], in the order I1, I2, …
-transmitted = [0.3, 0.85]                    # in the order T1, T2, …
+input = [0.3, 0.85]                          # [m from the interface], in the order I1, I2, …
+output = [0.3, 0.85]                         # in the order O1, O2, …
 gauge_length = 2.0e-3                        # [m]
 [separation]
 eta = 1000.0                                 # Laplace damping [1/s]
@@ -175,7 +177,11 @@ gauge_length_correction = true
 valid_margin = 20.0e-6                       # [s]
 ```
 A missing, unknown or wrongly typed key stops the program, with a message that names all such keys. The
-number of positions in `[gauges]` must match the number of I and T columns in the records file.
+number of positions in `[gauges]` must match the number of I and O columns in the records file. The
+keys have the same names in the simulation and the analysis case files. A simulation case that still uses the
+former names (`length_incident`, `length_transmitted`, `material`, `material_transmitted`, `incident`,
+`transmitted`) is refused with a message that names
+the new keys.
 
 On start, the analysis prints a table of its settings next to the simulation settings. Each row has the status
 "same", "≠ DIFFERS" or "analysis only" (for the file paths and the `[separation]` keys, which have no

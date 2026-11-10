@@ -64,11 +64,11 @@ def test_analysis_case_complete_and_checked():
     check_analysis_config(acfg)
     bad = deep_merge(acfg, {"separation": {"etaa": 1.0}})
     del bad["separation"]["valid_margin"]
-    del bad["bars"]["material_transmitted"]["nu"]
+    del bad["bars"]["material_output"]["nu"]
     with pytest.raises(ValueError) as e:
         check_analysis_config(bad)
     msg = str(e.value)
-    for key in ("separation.valid_margin", "separation.etaa", "bars.material_transmitted.nu"):
+    for key in ("separation.valid_margin", "separation.etaa", "bars.material_output.nu"):
         assert key in msg, msg
     with pytest.raises(ValueError, match=r"\[impact\] is only used"):
         check_analysis_config({**acfg, "impact": {"velocity": 1.0}})
@@ -78,7 +78,7 @@ def test_analysis_case_complete_and_checked():
         check_analysis_config(no_impact)
     with pytest.raises(ValueError, match="f_max"):
         check_analysis_config(deep_merge(acfg, {"separation": {"f_max": "none"}}))
-    check_analysis_config(deep_merge(acfg, {"bars": {"material": {"inner_radius": 0.0}}}))   # optional key
+    check_analysis_config(deep_merge(acfg, {"bars": {"material_input": {"inner_radius": 0.0}}}))   # optional key
 
 
 def test_comparison_marks_differences():
@@ -88,9 +88,9 @@ def test_comparison_marks_differences():
     assert not [r for r in rows if r["status"] == "differs"]
     assert {r["key"] for r in rows if r["status"] == "analysis only"} >= {"separation.eta", "records"}
     acfg = deep_merge(acfg, {"impact": {"velocity": 6.0}, "gauges": {"gauge_length": 3e-3},
-                             "bars": {"material_transmitted": {"E": 2.4e9}}})
+                             "bars": {"material_output": {"E": 2.4e9}}})
     diff = [r["key"] for r in compare_settings(acfg, sim) if r["status"] == "differs"]
-    assert diff == ["impact.velocity", "bars.material_transmitted.E", "gauges.gauge_length"], diff
+    assert diff == ["impact.velocity", "bars.material_output.E", "gauges.gauge_length"], diff
     out = io.StringIO()
     assert print_comparison(compare_settings(acfg, sim), "title", out) == 3
     text = out.getvalue()

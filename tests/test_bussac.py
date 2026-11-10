@@ -11,7 +11,7 @@ from hopkinson_simulator import BarMaterial, BarModel, LoveRod, deep_merge, gene
 CASES = Path(__file__).resolve().parents[1] / "simulation_cases"
 SHPB = load_config(CASES / "SHPB.toml")
 SHTB = load_config(CASES / "SHTB.toml")
-MAT = BarMaterial(**SHPB["bars"]["material"])
+MAT = BarMaterial(**SHPB["bars"]["material_input"])
 
 
 def _bussac(cfg, records="records", t_end=None, **kw):
@@ -63,9 +63,9 @@ def full_acfg(sim_cfg: dict) -> dict:
     b, g = sim_cfg["bars"], sim_cfg["gauges"]
     acfg = {"name": "test", "records": "simulation.csv", "settings": "simulation.toml", "channels": "averaged",
             "setup": sim_cfg["setup"],
-            "bars": {"bar_model": sim_cfg["bar_model"], "material": dict(b["material"]),
-                     "material_transmitted": dict(b.get("material_transmitted", b["material"]))},
-            "gauges": {k: g[k] for k in ("incident", "transmitted", "gauge_length")},
+            "bars": {"bar_model": sim_cfg["bar_model"], "material_input": dict(b["material_input"]),
+                     "material_output": dict(b.get("material_output", b["material_input"]))},
+            "gauges": {k: g[k] for k in ("input", "output", "gauge_length")},
             "separation": {"eta": 1000.0, "f_max": "auto", "gauge_length_correction": True,
                            "valid_margin": 20e-6}}
     if sim_cfg["setup"] == "direct_impact":
@@ -87,9 +87,9 @@ def test_analysis_case_settings_take_effect(tmp_path):
     valid = data["time"] < tv
     w = data["interface"]["bar1"]["wave_out"]
     e0 = np.max(np.abs(r0["bar1"]["wave_out"] - w)[valid])
-    wrong_gauge = deep_merge(base, {"gauges": {"incident": [0.305, 0.85]}})
+    wrong_gauge = deep_merge(base, {"gauges": {"input": [0.305, 0.85]}})
     wrong_model = deep_merge(base, {"bars": {"bar_model": "A"}})
-    for acfg, key in ((wrong_gauge, "gauges.incident"), (wrong_model, "bars.bar_model")):
+    for acfg, key in ((wrong_gauge, "gauges.input"), (wrong_model, "bars.bar_model")):
         diff = [r["key"] for r in compare_settings(acfg, cfg) if r["status"] == "differs"]
         assert diff == [key], diff
         r, *_ = run_bussac(data, acfg)

@@ -13,22 +13,22 @@ bar_model = "B"                  # A: 1D wave equation, B: Love rod, C: Pochhamm
 
 # ---------------------------------------------------------------- bars
 [bars]
-length_incident = 2.0            # input bar length [m]
-length_transmitted = 2.0         # output bar length [m]
+length_input = 2.0               # input bar length [m]
+length_output = 2.0              # output bar length [m]
 far_end_reflections = true       # true: free far ends (strain changes sign on reflection); false: absorbing
 
-[bars.material]                  # Al 7075, nominal handbook values; used for both bars
+[bars.material_input]            # Al 7075, nominal handbook values; used for both bars
 E = 71.7e9                       # Young's modulus [Pa]
 rho = 2810.0                     # density [kg/m^3]
 nu = 0.33                        # Poisson's ratio (enters the dispersion of models B and C)
 radius = 8.0e-3                  # bar radius [m] (16 mm diameter)
-# A different output-bar material can be given in a [bars.material_transmitted] table
-# with the same keys; it defaults to [bars.material].
+# A different output-bar material can be given in a [bars.material_output] table
+# with the same keys; it defaults to [bars.material_input].
 
 # ---------------------------------------------------------------- strain gauges
 [gauges]
-incident = [0.3, 0.85]           # gauge positions on the input bar [m from the interface]
-transmitted = [0.3, 0.85]        # gauge positions on the output bar [m from the interface]
+input = [0.3, 0.85]              # gauge positions on the input bar [m from the interface]
+output = [0.3, 0.85]             # gauge positions on the output bar [m from the interface]
 gauge_length = 2.0e-3            # active gauge length [m]
 averaging = true                 # true: records are averaged over the gauge length
 

@@ -33,13 +33,13 @@ velocity = 5.0                   # impact velocity v0 of the input bar [m/s]; ad
 # A rho (s/k)^2 eps. For model B it gives the cut-off frequency on which f_max = "auto" is based.
 # The material enters through c0 = sqrt(E/rho), and for models B and C also through nu and the radius.
 bar_model = "B"                  # A: 1D wave equation, B: Love rod, C: Pochhammer-Chree (1st mode)
-material = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }  # input bar
-material_transmitted = { E = 2.3e9, rho = 1200.0, nu = 0.37, radius = 8.15e-3 }  # output bar (polycarbonate)
+material_input = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }  # input bar
+material_output = { E = 2.3e9, rho = 1200.0, nu = 0.37, radius = 8.15e-3 }  # output bar (polycarbonate)
                                  # E [Pa], rho [kg/m^3], nu [-], radius [m]; optional inner_radius [m] for a tube
 
-[gauges]                         # assigned in order to the gauges I1, I2, ... and T1, T2, ... of the records file
-incident = [0.13, 0.53]          # positions on the input bar [m from the interface]
-transmitted = [0.12, 0.50]       # positions on the output bar [m from the interface]
+[gauges]                         # assigned in order to the gauges I1, I2, ... and O1, O2, ... of the records file
+input = [0.13, 0.53]             # positions on the input bar [m from the interface]
+output = [0.12, 0.50]            # positions on the output bar [m from the interface]
 gauge_length = 2.0e-3            # active gauge length [m]
 
 [separation]

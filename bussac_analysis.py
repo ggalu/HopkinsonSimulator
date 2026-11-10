@@ -59,9 +59,8 @@ ROOT = Path(__file__).resolve().parent
 # Local coordinate per bar: x >= 0 from the interface INTO the bar. "plus" travels away from
 # the specimen (= outgoing wave b), "minus" travels toward it (= incoming wave a). Gauge k:
 #     E_k(s) = G_k(s) [P(s) exp(-i k(s) x_k) + M(s) exp(+i k(s) x_k)],   s = omega - i eta.
-# Strain tension positive. Velocities are returned in the GLOBAL frame (x from the incident
-# toward the transmitted bar), using ``outward`` = -1 for the incident bar, +1 for the
-# transmitted bar.
+# Strain tension positive. Velocities are returned in the GLOBAL frame (x from the input
+# toward the output bar), using ``outward`` = -1 for the input bar, +1 for the output bar.
 #
 # Regularisation: eta > 0 (units 1/s) removes the singularity at DC and, for two gauges a
 # distance D apart, at f = n c / (2 D): the determinant there is 4 sinh^2(eta D / c) instead of 0.
@@ -171,7 +170,7 @@ def separate(t, signals, positions, model: BarModel, eta: float = 1000.0, f_max:
     eta : exponential-window damping [1/s].
     f_max : band limit [Hz]; None -> default_f_max(model).
     gauge_length : gauge length(s) [m]; 0 -> point gauges.
-    outward : global direction of the bar's local +x axis (-1 incident bar, +1 transmitted bar).
+    outward : global direction of the bar's local +x axis (-1 input bar, +1 output bar).
 
     Returns dict with time histories at the interface:
         plus, minus (strain waves; plus = away from the specimen),
@@ -226,14 +225,14 @@ def separate_case(case: dict, bar_models: dict, eta: float = 1000.0, f_max: floa
 
 NUMBER, TEXT, FLAG, POSITIONS = "number", "text", "true/false", "list of numbers"
 MATERIAL_KEYS = {"E": NUMBER, "rho": NUMBER, "nu": NUMBER, "radius": NUMBER}
-OPTIONAL_KEYS = {"bars.material.inner_radius": NUMBER, "bars.material_transmitted.inner_radius": NUMBER}
+OPTIONAL_KEYS = {"bars.material_input.inner_radius": NUMBER, "bars.material_output.inner_radius": NUMBER}
 ANALYSIS_KEYS = {
     "name": TEXT, "records": TEXT, "settings": TEXT,
     "channels": ("averaged", "point"),
     "setup": ("shpb", "direct_impact", "shtb"),
     "impact": {"velocity": NUMBER},                       # required for setup = "direct_impact" only
-    "bars": {"bar_model": ("A", "B", "C"), "material": MATERIAL_KEYS, "material_transmitted": MATERIAL_KEYS},
-    "gauges": {"incident": POSITIONS, "transmitted": POSITIONS, "gauge_length": NUMBER},
+    "bars": {"bar_model": ("A", "B", "C"), "material_input": MATERIAL_KEYS, "material_output": MATERIAL_KEYS},
+    "gauges": {"input": POSITIONS, "output": POSITIONS, "gauge_length": NUMBER},
     "separation": {"eta": NUMBER, "f_max": "number or \"auto\"", "gauge_length_correction": FLAG,
                    "valid_margin": NUMBER},
 }
@@ -318,12 +317,12 @@ def compare_settings(acfg: dict, sim_cfg: dict) -> list[dict]:
     if "impact" in acfg:
         row("impact.velocity", acfg["impact"]["velocity"], sim_cfg.get("impact", {}).get("velocity"))
     row("bars.bar_model", acfg["bars"]["bar_model"], sim_cfg.get("bar_model"))
-    for table in ("material", "material_transmitted"):
-        sim_mat = sim_bars.get(table, sim_bars.get("material", {}))
+    for table in ("material_input", "material_output"):
+        sim_mat = sim_bars.get(table, sim_bars.get("material_input", {}))   # material_output defaults to input
         mat = acfg["bars"][table]
         for k in (*MATERIAL_KEYS, "inner_radius"):
             row(f"bars.{table}.{k}", mat.get(k, 0.0), sim_mat.get(k, 0.0 if k == "inner_radius" else None))
-    for k in ("incident", "transmitted", "gauge_length"):
+    for k in ("input", "output", "gauge_length"):
         row(f"gauges.{k}", acfg["gauges"][k], sim_g.get(k))
     for k, v in acfg["separation"].items():
         row(f"separation.{k}", v, None, False)
@@ -392,14 +391,14 @@ def print_comparison(rows: list[dict], title: str, stream=None) -> int:
 
 def assumed_setup(data: dict, acfg: dict):
     """Bar models {1, 2} and channel table of the analysis case: gauge positions and gauge length from
-    [gauges], assigned in order to the I* (input bar) and T* (output bar) columns of the records file."""
+    [gauges], assigned in order to the I* (input bar) and O* (output bar) columns of the records file."""
     b = acfg["bars"]
-    models = {1: make_bar_model(b["bar_model"], BarMaterial(**b["material"])),
-              2: make_bar_model(b["bar_model"], BarMaterial(**b["material_transmitted"]))}
+    models = {1: make_bar_model(b["bar_model"], BarMaterial(**b["material_input"])),
+              2: make_bar_model(b["bar_model"], BarMaterial(**b["material_output"]))}
     ch = copy.deepcopy(data["channels"])
     ch["distance_from_interface"] = np.zeros(len(ch["names"]))
     ch["gauge_length"] = np.full(len(ch["names"]), float(acfg["gauges"]["gauge_length"]))
-    for bar, key in ((1, "incident"), (2, "transmitted")):
+    for bar, key in ((1, "input"), (2, "output")):
         pos = acfg["gauges"][key]
         sel = np.flatnonzero(ch["bar"] == bar)
         if len(pos) != len(sel):

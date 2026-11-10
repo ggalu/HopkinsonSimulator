@@ -17,7 +17,7 @@ CASES = Path(__file__).resolve().parents[1] / "simulation_cases"
 SHPB = load_config(CASES / "SHPB.toml")
 IMPACT = load_config(CASES / "direct_impact.toml")
 SHTB = load_config(CASES / "SHTB.toml")
-MAT = BarMaterial(**SHPB["bars"]["material"])
+MAT = BarMaterial(**SHPB["bars"]["material_input"])
 ELASTIC = {"sigma0": 1e12, "rate_dependent": False}
 TRAPEZOID = {"preset": "trapezoid", "rise": 30e-6, "fall": 30e-6}
 
@@ -106,6 +106,12 @@ def test_shtb_elastic_specimen_is_a_spring():
     err = np.max(np.abs(b2 - sol.y[0])) / np.max(np.abs(b2))
     assert err < 2e-3, err
     assert np.max(np.abs(b2 - a1)) / np.max(np.abs(a1)) > 0.1    # the spring changes the wave noticeably
+
+
+def test_former_key_names_are_refused():
+    old = variant(SHPB, gauges={"incident": [0.3, 0.85]})
+    with pytest.raises(ValueError, match=r"gauges.incident -> gauges.input"):
+        generate(old)
 
 
 def test_shtb_needs_bonded_specimen():
@@ -216,7 +222,7 @@ def test_gauges_are_forward_propagations_of_interface_waves(cfg, tol, tmp_path):
     write_records_csv(case, tmp_path / "c.csv")
     c = read_records_csv(tmp_path / "c.csv")
     ch, itf = c["channels"], c["interface"]
-    positions = list(cfg["gauges"]["incident"]) + list(cfg["gauges"]["transmitted"])
+    positions = list(cfg["gauges"]["input"]) + list(cfg["gauges"]["output"])
     for i in range(4):
         bar, d = int(ch["bar"][i]), float(positions[i])
         m = sim.model1 if bar == 1 else sim.model2

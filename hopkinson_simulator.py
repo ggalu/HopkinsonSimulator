@@ -464,12 +464,12 @@ def make_pulse(cfg: dict) -> TrapezoidPulse:
 # At each bar-specimen interface the bar is represented by the NON-DISPERSIVE
 # characteristic relations of Model A, whatever the bar model used for propagation:
 #
-#     bar 1 (incident, x < 0):     N1 = E1 A1 (a1 + b1),   v1 = c1 (-a1 + b1)
-#     bar 2 (transmitted, x > Ls): N2 = E2 A2 (a2 + b2),   v2 = c2 ( a2 - b2)
+#     bar 1 (input, x < 0):        N1 = E1 A1 (a1 + b1),   v1 = c1 (-a1 + b1)
+#     bar 2 (output, x > Ls):      N2 = E2 A2 (a2 + b2),   v2 = c2 ( a2 - b2)
 #
 # a1, a2: strain waves arriving at the interface (a1 travels +x, a2 travels -x);
 # b1, b2: strain waves leaving the interface. Sign convention: global x from the
-# incident towards the transmitted bar, velocities positive in +x, strain / stress /
+# input towards the output bar, velocities positive in +x, strain / stress /
 # force positive in tension.
 #
 # For dispersive bars (Models B, C) the exact interface impedance is frequency
@@ -751,7 +751,7 @@ def make_specimen(cfg: dict):
 # Method
 # ------
 # 1. A right-going strain pulse eps_ref(t) is prescribed at distance d_ref from the
-#    interface on the incident bar.
+#    interface on the input bar.
 # 2. It is propagated to the interface with the chosen bar model (A, B or C) in the
 #    frequency domain -> incident wave a1 at the interface.
 # 3. The specimen (lumped or FD) is solved in the time domain with the
@@ -790,18 +790,33 @@ def deep_merge(base: dict, over: dict) -> dict:
     return out
 
 
+RENAMED_KEYS = {("bars", "length_incident"): "bars.length_input",
+                ("bars", "length_transmitted"): "bars.length_output",
+                ("bars", "material"): "bars.material_input",
+                ("bars", "material_transmitted"): "bars.material_output",
+                ("gauges", "incident"): "gauges.input", ("gauges", "transmitted"): "gauges.output"}
+
+
+def check_renamed_keys(cfg: dict) -> None:
+    """Refuse a case file that still uses the former key names, and name the new ones."""
+    old = [f"{t}.{k} -> {new}" for (t, k), new in RENAMED_KEYS.items() if k in cfg.get(t, {})]
+    if old:
+        raise ValueError("the case file uses renamed keys: " + ", ".join(old))
+
+
 class SHPBSimulation:
     """Holds the converged interface waves; evaluates the wave field anywhere on the bars."""
 
     def __init__(self, cfg: dict):
+        check_renamed_keys(cfg)
         self.cfg = cfg
         bc = cfg["bars"]
-        self.mat1 = BarMaterial(**bc["material"])
-        self.mat2 = BarMaterial(**bc.get("material_transmitted", bc["material"]))
+        self.mat1 = BarMaterial(**bc["material_input"])
+        self.mat2 = BarMaterial(**bc.get("material_output", bc["material_input"]))
         self.model1 = make_bar_model(cfg["bar_model"], self.mat1)
         self.model2 = make_bar_model(cfg["bar_model"], self.mat2)
-        self.L1 = float(bc["length_incident"])
-        self.L2 = float(bc["length_transmitted"])
+        self.L1 = float(bc["length_input"])
+        self.L2 = float(bc["length_output"])
         self.R = -1.0 if bc.get("far_end_reflections", True) else 0.0
         s = cfg["sampling"]
         self.fs = float(s["rate"])
@@ -896,7 +911,7 @@ class SHPBSimulation:
         sp = self.sp
         if bar == 1:
             if d > self.d_ref + 1e-12:
-                raise ValueError("position beyond the source on the incident bar")
+                raise ValueError("position beyond the source on the input bar")
             m, L = self.model1, self.L1
             right = propagate(sp, m, self.eps_ref, self.d_ref - d, gauge_length)
             if self.R:
@@ -938,8 +953,8 @@ class SHPBSimulation:
     def gauge_records(self):
         g = self.cfg["gauges"]
         Lg = float(g["gauge_length"])
-        chans = [(1, d) for d in g["incident"]] + [(2, d) for d in g["transmitted"]]
-        names = [f"I{i+1}" for i in range(len(g["incident"]))] + [f"T{i+1}" for i in range(len(g["transmitted"]))]
+        chans = [(1, d) for d in g["input"]] + [(2, d) for d in g["output"]]
+        names = [f"I{i+1}" for i in range(len(g["input"]))] + [f"O{i+1}" for i in range(len(g["output"]))]
         point = np.array([self.strain_at(b, d) for b, d in chans])
         avg = np.array([self.strain_at(b, d, Lg) for b, d in chans]) if g.get("averaging", True) else point.copy()
         return names, chans, point, avg
@@ -1253,7 +1268,7 @@ def write_records_csv(case: dict, path, settings_name: str = "simulation.toml") 
         f"case {case['name']}; settings in {settings_name}; sampling rate {case['sampling_rate']:g} Hz",
         "units: SI (s, m, N, m/s); strain dimensionless",
         "sign convention: " + SIGN_CONVENTION,
-        "I1, I2, ...: input-bar gauges, T1, T2, ...: output-bar gauges (order as in [gauges] of the settings); "
+        "I1, I2, ...: input-bar gauges, O1, O2, ...: output-bar gauges (order as in [gauges] of the settings); "
         "without suffix: averaged over the gauge length if [gauges] averaging = true; _point: at the gauge centre",
         "bar1_*, bar2_*: true quantities at the bar-specimen interface; wave_in travels towards the specimen, "
         "wave_out away from it; strain = wave_in + wave_out; velocity in the global frame; "
@@ -1268,7 +1283,7 @@ def read_records_csv(path) -> dict:
     comments, names, data = _read_csv(path)
     if not comments or comments[0] != FORMAT_VERSION:
         raise ValueError(f"{path}: not a {FORMAT_VERSION} file (first line: {comments[:1]})")
-    gauges = [n for n in names if n[:1] in "IT" and not n.endswith("_point")]
+    gauges = [n for n in names if n[:1] in "IO" and n[1:2].isdigit() and not n.endswith("_point")]
     missing = [n for n in ["t"] + [g + "_point" for g in gauges]
                + [f"{b}_{k}" for b in ("bar1", "bar2") for k, _ in INTERFACE_KEYS] if n not in data]
     if missing:

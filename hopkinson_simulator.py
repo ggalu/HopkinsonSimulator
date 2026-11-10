@@ -17,7 +17,8 @@ Three setups (``setup`` in the case file):
 The bars are not discretised in space. The simulator solves for the two strain waves at each bar-specimen
 interface, as time histories: a (incoming, travels toward the specimen) and b (outgoing). Waves are moved
 along a bar in the frequency domain with exp(-i k(omega) x), with the dispersion relation of model A
-(1D wave equation), B (Love rod) or C (Pochhammer-Chree first mode). The specimen is solved in the time
+(1D wave equation), B (Love rod) or C (Pochhammer-Chree first mode); models A and B can be viscoelastic
+(Kelvin-Voigt, material key tau). The specimen is solved in the time
 domain; the bars and the specimen are coupled by a fixed-point iteration in which each pass makes the
 solution exact for one more round trip in the bars. The gauge records are the propagations of the stored
 interface waves to the gauge positions, so the stored waves are the exact reference for wave separation.
@@ -58,9 +59,15 @@ ROOT = Path(__file__).resolve().parent
 #   decays as exp(-kappa s).
 # * Only omega >= 0 is used (real signals, rfft).
 #
-# A rheological (e.g. viscoelastic) bar can be added later by subclassing
-# ``BarModel`` and returning a complex k(omega); the propagator, the velocity
-# operator and the force operator only use ``wavenumber``.
+# Kelvin-Voigt bar (models A and B, material key ``tau`` > 0): the stress is
+# sigma = E (eps + tau eps_t), i.e. the complex modulus E (1 + i omega tau), a spring E
+# in parallel with a dashpot of viscosity E tau. tau is a retardation time; the loss
+# tangent is omega tau. In the dispersion relation c0^2 becomes c0^2 (1 + i omega tau), so
+# k is complex with Im k < 0 at every frequency and every component decays as it travels.
+# For omega tau << 1 (model A): attenuation omega^2 tau / (2 c0), phase velocity
+# c0 (1 + 3/8 (omega tau)^2). The propagator, the velocity operator and the force operator
+# only use ``wavenumber``, so they need no change; for model A, A rho (omega/k)^2 eps is
+# exactly the Kelvin-Voigt force A E (eps + tau eps_t).
 
 @dataclass(frozen=True)
 class BarMaterial:
@@ -69,6 +76,7 @@ class BarMaterial:
     nu: float       # Poisson's ratio [-]
     radius: float   # bar radius a [m] (outer radius of a tube)
     inner_radius: float = 0.0   # inner radius of a tube [m]; 0 for a solid bar
+    tau: float = 0.0            # Kelvin-Voigt retardation time [s]; 0 for an elastic bar
 
     @property
     def c0(self) -> float:
@@ -113,12 +121,15 @@ class BarModel:
 
 
 class WaveEq1D(BarModel):
-    """Model A: rho u_tt = E u_xx (non-dispersive)."""
+    """Model A: rho u_tt = E u_xx (non-dispersive); Kelvin-Voigt: rho u_tt = E (u_xx + tau u_xxt)."""
 
     name = "A"
 
     def wavenumber(self, omega):
-        return np.asarray(omega, dtype=float) / self.mat.c0 + 0j
+        omega = np.asarray(omega, dtype=float)
+        if self.mat.tau == 0:
+            return omega / self.mat.c0 + 0j
+        return omega / (self.mat.c0 * np.sqrt(1 + 1j * omega * self.mat.tau))
 
 
 class LoveRod(BarModel):
@@ -129,6 +140,10 @@ class LoveRod(BarModel):
 
     Dispersion: c^2/c0^2 = 1/(1 + nu^2 k^2 r_g^2)  <=>  k^2 = omega^2/(c0^2 - nu^2 r_g^2 omega^2).
     Propagating only below omega_c = c0/(nu r_g); evanescent above.
+
+    Kelvin-Voigt (tau > 0): E -> E (1 + i omega tau), k^2 = omega^2/(c0^2 (1 + i omega tau) - nu^2 r_g^2 omega^2).
+    The denominator then has a positive imaginary part for omega > 0, so the principal root is continuous
+    (no cut-off singularity) and Im k < 0.
     """
 
     name = "B"
@@ -143,6 +158,9 @@ class LoveRod(BarModel):
 
     def wavenumber(self, omega):
         omega = np.asarray(omega, dtype=float)
+        if self.mat.tau > 0:
+            return omega / np.sqrt(self.mat.c0 ** 2 * (1 + 1j * omega * self.mat.tau)
+                                   - (self.mat.nu * self.rg * omega) ** 2)
         den = self.mat.c0 ** 2 - (self.mat.nu * self.rg * omega) ** 2
         k = np.empty(omega.shape, dtype=complex)
         prop = den > 0
@@ -241,6 +259,8 @@ class PochhammerChree(BarModel):
     def __init__(self, material: BarMaterial):
         if material.inner_radius > 0:
             raise ValueError("the Pochhammer-Chree model is implemented for solid bars only")
+        if material.tau > 0:
+            raise ValueError("the Pochhammer-Chree model is elastic; tau > 0 needs bar model A or B")
         super().__init__(material)
         xi, cbar, self.c0bar, self.cRbar = pc_first_mode_table(float(material.nu))
         self.cT = material.c0 / self.c0bar
@@ -348,7 +368,9 @@ def transfer(model: BarModel, omega: np.ndarray, distance: float, gauge_length: 
     length centred at the end point. Components whose group delay distance/c_g exceeds
     ``max_group_delay`` are set to zero: they cannot arrive within the (padded) window
     and would otherwise wrap around. This matters only for the Love model close to its
-    cut-off, where c_g -> 0.
+    cut-off, where c_g -> 0. Elastic bars: only propagating components (kappa = 0) are
+    excluded. Kelvin-Voigt bars (every kappa > 0): components are excluded unless they are
+    damped below exp(-30) over the mask distance.
     """
     if distance < 0:
         raise ValueError("propagation distance must be >= 0 (forward in the direction of travel)")
@@ -358,7 +380,8 @@ def transfer(model: BarModel, omega: np.ndarray, distance: float, gauge_length: 
     ok = np.isfinite(k) & (kappa * distance < 700.0)
     if max_group_delay is not None and distance > 0:
         dm = distance if mask_distance is None else mask_distance
-        ok &= ~((kappa == 0) & (dm * group_delay_per_metre(model, omega) > max_group_delay))
+        weak = (kappa == 0) if model.mat.tau == 0 else (kappa * dm < 30.0)
+        ok &= ~(weak & (dm * group_delay_per_metre(model, omega) > max_group_delay))
     H[ok] = np.exp(-1j * k[ok] * distance)
     if gauge_length > 0:
         H[ok] *= gauge_average_factor(k[ok], gauge_length)

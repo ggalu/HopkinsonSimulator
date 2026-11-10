@@ -4,6 +4,7 @@ overrides of the analysis case."""
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from bussac_analysis import compare_settings, run_bussac, separate_case, wavenumber_laplace
 from hopkinson_simulator import BarMaterial, BarModel, LoveRod, deep_merge, generate, load_config
@@ -94,3 +95,32 @@ def test_analysis_case_settings_take_effect(tmp_path):
         assert diff == [key], diff
         r, *_ = run_bussac(data, acfg)
         assert np.max(np.abs(r["bar1"]["wave_out"] - w)[valid]) > 3 * e0
+
+
+def test_force_imbalance():
+    """Imbalance (N1 - N2)/mean, evaluated only where |mean| >= 5 % of its peak in the valid window."""
+    from bussac_analysis import force_imbalance
+    n1 = np.array([0.0, 0.01, 1.0, 2.0, 2.0, 0.0])
+    n2 = np.array([0.0, 0.0, 0.9, 2.0, 2.2, 0.0])
+    valid = np.array([True, True, True, True, True, False])
+    r, m = force_imbalance(n1, n2, valid)
+    assert np.isnan(r[[0, 1, 5]]).all()                       # small mean force, outside the window
+    assert np.allclose(r[2:5], [0.1 / 0.95, 0.0, -0.2 / 2.1])
+    assert m == pytest.approx(0.1 / 0.95)
+
+
+def test_equilibrium_figure_and_values(tmp_path):
+    """Lumped specimen: the true face forces are equal (equilibrium by construction); the separated ones agree
+    closely. The figure is written. The 1 ms record of the example case: a shorter record ends while the pulse is
+    still in the bars, which spoils the separation near the end of the valid window."""
+    import matplotlib
+    matplotlib.use("Agg")
+    from bussac_analysis import equilibrium, plot_equilibrium
+    cfg = SHPB
+    case, _ = generate(cfg)
+    r, tv, _, _ = run_bussac(case, full_acfg(cfg))
+    eq = equilibrium(case, r, case["time"] < tv)
+    assert eq["max_relative_imbalance_truth"] < 1e-10
+    assert eq["max_relative_imbalance_separated"] < 0.01
+    plot_equilibrium(case, r, tv, "test", tmp_path / "eq.png", "shpb")
+    assert (tmp_path / "eq.png").stat().st_size > 10_000

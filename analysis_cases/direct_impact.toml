@@ -36,6 +36,7 @@ bar_model = "B"                  # A: 1D wave equation, B: Love rod, C: Pochhamm
 material_input = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }  # input bar
 material_output = { E = 2.3e9, rho = 1200.0, nu = 0.37, radius = 8.15e-3 }  # output bar (polycarbonate)
                                  # E [Pa], rho [kg/m^3], nu [-], radius [m]; optional inner_radius [m] for a tube
+                                 # and tau [s], the Kelvin-Voigt retardation time (0: elastic)
 
 [gauges]                         # assigned in order to the gauges I1, I2, ... and O1, O2, ... of the records file
 input = [0.13, 0.53]             # positions on the input bar [m from the interface]
@@ -46,6 +47,8 @@ gauge_length = 2.0e-3            # active gauge length [m]
 eta = 1000.0                     # Laplace damping [1/s]: removes the singularities at DC and at the
                                  # frequencies n c / (2 D) of two gauges a distance D apart. Larger: better
                                  # conditioned, but errors grow like exp(eta t) late in the record
-f_max = "auto"                   # band limit [Hz]; "auto": 0.8 x the Love cut-off for model B, none for A and C
+f_max = "auto"                   # band limit [Hz]; "auto": 0.8 x the Love cut-off for model B, none for A and C;
+                                 # for a Kelvin-Voigt bar also at most the frequency where the reconstruction
+                                 # amplifies by 1e3 at the farthest gauge (exp(kappa x_max) = 1e3)
 gauge_length_correction = true   # include the averaging over the gauge length in the gauge model
 valid_margin = 20.0e-6           # errors are evaluated for t < T - x_max/c0 - valid_margin [s]

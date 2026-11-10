@@ -21,8 +21,8 @@ errors of the analysis by less than 10⁻⁹ of their values. The specimen of th
 ```
 hopkinson_simulator.py   bar models, propagation, pulses, specimens, the three setups, output files, figure
 bussac_analysis.py       analysis case check, comparison of settings, Bussac separation, errors, figure
-simulation_cases/        SHPB.toml, direct_impact.toml, SHTB.toml
-analysis_cases/          SHPB.toml, direct_impact.toml, SHTB.toml
+simulation_cases/        SHPB.toml, direct_impact.toml, direct_impact_viscoelastic.toml, SHTB.toml
+analysis_cases/          the same four names
 tests/                   pytest tests of both programs
 results/                 output (not in git)
 ```
@@ -35,7 +35,7 @@ python hopkinson_simulator.py simulation_cases/SHPB.toml          # -> results/S
 python bussac_analysis.py analysis_cases/SHPB.toml                # -> results/SHPB_bussac/
 python hopkinson_simulator.py simulation_cases/*.toml --headless  # all cases, figures saved but not shown
 python bussac_analysis.py analysis_cases/*.toml --headless
-python -m pytest -q                                               # 27 tests, about 50 s
+python -m pytest -q                                               # 42 tests, about 50 s
 ```
 Without `--headless` the figures are also shown, and the program ends when all windows are closed.
 `--out <dir>` changes the results root.
@@ -43,7 +43,7 @@ Without `--headless` the figures are also shown, and the program ends when all w
 | program | output in `results/<name>/` |
 |---|---|
 | simulator | `simulation.toml` (settings), `simulation.csv` (gauge records and interface truth), `specimen.csv` (specimen, source and loading-end histories), `waves.png` (gauge records and true interface waves) |
-| analysis | `bussac.json` (analysis case, comparison with the simulation settings, end of the valid window, errors), `bussac.png` (records, separated waves, force and velocity against the truth), `separated.txt` (time and the separated quantities of both bars) |
+| analysis | `bussac.json` (analysis case, comparison with the simulation settings, end of the valid window, errors, force imbalance), `bussac.png` (records, separated waves, force and velocity against the truth), `equilibrium.png` (forces at the two interfaces and their imbalance), `separated.txt` (time and the separated quantities of both bars) |
 
 ## How the simulator works
 The bars are not discretised in space. The simulator solves for the two strain waves at each bar–specimen
@@ -51,6 +51,26 @@ interface, as time histories: the incoming wave a, which travels toward the spec
 which travels away from it. The interface strain is a + b. Each wave is moved along a bar in the frequency
 domain with the transfer function exp(−i k(ω) x), where k(ω) is the dispersion relation of the bar model:
 A, the 1D wave equation; B, the Love rod; or C, the first mode of Pochhammer–Chree theory.
+
+### Viscoelastic bars (Kelvin–Voigt)
+A bar of model A or B can be viscoelastic: a material table with `tau` > 0 makes it a Kelvin–Voigt solid, a
+spring E in parallel with a dashpot of viscosity E τ. The stress is σ = E (ε + τ ε̇), that is the complex
+modulus E (1 + iωτ); τ is a retardation time, and the loss tangent is ωτ. In the dispersion relation c0² becomes
+c0² (1 + iωτ), so the wavenumber is complex with Im k < 0 and every frequency component decays as it travels.
+For ωτ ≪ 1 (model A) the attenuation is ω²τ/(2 c0) and the phase velocity c0 (1 + ⅜ (ωτ)²). With `tau = 0`, the
+default, the bar is elastic and the results are those of the elastic models. Model C is elastic only and
+refuses `tau` > 0.
+
+Propagation, gauge averaging, interface velocity and force need no change, because they use only k(ω); for
+model A, A ρ (ω/k)² ε is exactly the Kelvin–Voigt force A E (ε + τ ε̇). The specimen still sees the bar through
+the elastic impedance ρ c0 A, with c0 from E.
+
+The model has one parameter, so it can match a real bar near one frequency only: its loss tangent grows in
+proportion to frequency, while that of real polymers varies slowly over many decades. A choice is
+τ = tan δ / ω at the main frequency of the pulse. For ωτ ≫ 1 the phase velocity grows without bound, so the bar
+has no sharp wave front; these components are strongly damped. The example case
+`direct_impact_viscoelastic.toml` gives the polycarbonate output bar τ = 10⁻⁷ s, a placeholder and not a
+measured value.
 
 A case is solved by a fixed-point iteration. In each pass the incoming waves are formed (from the loading and
 from the echoes of earlier outgoing waves at the free far ends), the specimen is solved in the time domain with
@@ -110,7 +130,8 @@ One self-contained, commented TOML file per case. The tables are: `[bars]` (with
 `[bars.material_output]`, which defaults to the input-bar material), `[gauges]` (with the gauge positions
 `input` and `output`), the loading (`[source]` and `[pulse]` for the SHPB, `[impact]` for
 the direct impact, `[striker]`, `[striker.material]` and `[flange]` for the SHTB), `[specimen]` and
-`[specimen.material]`, `[sampling]` and `[coupling]`. Every parameter is commented in the example files. To make a
+`[specimen.material]`, `[sampling]` and `[coupling]`. A bar material may contain `tau`, the Kelvin–Voigt
+retardation time (see above). Every parameter is commented in the example files. To make a
 new case, copy one, rename it and edit it. SI units throughout; strain, stress and force are positive in tension.
 
 ## Simulation output
@@ -165,14 +186,14 @@ setup = "shpb"                               # "shpb", "direct_impact" or "shtb"
 bar_model = "B"                              # A, B or C
 material_input = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }        # input bar
 material_output = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }       # output bar
-                                             # inner_radius [m] is optional (tube; default 0)
+                                             # optional: inner_radius [m] (tube) and tau [s] (Kelvin-Voigt); default 0
 [gauges]
 input = [0.3, 0.85]                          # [m from the interface], in the order I1, I2, …
 output = [0.3, 0.85]                         # in the order O1, O2, …
 gauge_length = 2.0e-3                        # [m]
 [separation]
 eta = 1000.0                                 # Laplace damping [1/s]
-f_max = "auto"                               # band limit [Hz], inf, or "auto" (0.8 x the Love cut-off for model B, none otherwise)
+f_max = "auto"                               # band limit [Hz], inf, or "auto" (see below)
 gauge_length_correction = true
 valid_margin = 20.0e-6                       # [s]
 ```
@@ -197,6 +218,31 @@ continued analytically to k(ω − iη); the Laplace damping η removes the sing
 at zero frequency and at the frequencies n c/(2D) of two gauges a distance D apart. The price is that errors
 late in the record are amplified by about exp(η t).
 
+The band limit `f_max = "auto"` is 0.8 times the Love cut-off for model B and none for models A and C. For a
+Kelvin–Voigt bar it is in addition at most the frequency at which exp(κ x_max) reaches 10³, where κ = −Im k and
+x_max is the farthest gauge. The reason is that the wave leaving the interface is damped by exp(−κ x) on its way
+to a gauge, so its reconstruction at the interface multiplies by exp(+κ x). This loss of information is a
+property of the attenuating bar, not of the method. The value 10³ is a choice for noise-free synthetic records:
+on the example cases the separation stayed usable up to an amplification of about 10³–10⁴ and became unstable
+above. Measured records, with noise, need a lower band limit. The band limit used is stored in `bussac.json`.
+
+### Force equilibrium
+A second figure, `equilibrium.png` (its own window without `--headless`), lets the user judge whether the
+specimen was in force equilibrium. Panel A shows the separated forces A·E·ε at the input-bar and the output-bar
+interface, with the true forces drawn faintly behind them. A·E·ε is the force through which the simulated
+specimen is coupled to the bars. Panel B shows the relative imbalance (N_input − N_output)/N_mean, with
+N_mean = (N_input + N_output)/2, for the separated and the true forces, and lines at ±5 % as a guide. The ratio is
+shown only where |N_mean| is at least 5 % of its peak in the valid window, because it has no meaning while the
+forces are small. Its largest value in the valid window is printed and stored in `bussac.json` under
+`equilibrium`. This largest value usually comes from the loading front and the unloading, where one face carries
+much more force than the other, so the curve over time is the better guide to whether equilibrium was reached
+during the test.
+
+The lumped specimen assumes uniform stress, so its two face forces are equal by construction: for the example
+cases the true imbalance is zero, and the separated imbalance shows only the error of the separation (0.1 % for
+the SHPB, 3.9 % for the direct impact). The finite-difference specimen (`kind = "fd"`) resolves the stress wave in
+the specimen, so a long specimen shows a real imbalance on the rise of the load, which then decays.
+
 The errors in `bussac.json` are the maximum and the rms of separated minus true quantity over the valid
 window, t < T − x_max/c0 − valid_margin (the outgoing wave at time t needs gauge data up to x_max/c0 later).
 For the SHPB and the SHTB they are relative to the peak incident wave, the peak input-bar velocity and the peak
@@ -215,6 +261,13 @@ peak (the incident pulse is long). With model A, where the separation should be 
 about 4·10⁻⁴ with a 2 ms record and about 6·10⁻⁵ with a 3 ms record. A longer record, or a larger η, moves this
 error further from the times of interest.
 
+For the viscoelastic variant of the direct impact (τ = 10⁻⁷ s on the output bar), the band limit "auto" of the
+output bar is 66 kHz instead of 83 kHz, and the largest error of the separated output-bar waves is 1.6·10⁻²,
+against 1.1·10⁻² for the elastic case. An analysis that ignores the attenuation (τ = 0, with the band limit of
+the elastic bar) gives 2.8·10⁻². Against the full truth, a band limit always leaves the error of the missing
+high frequencies; against the truth limited to the same band, the separation of Kelvin–Voigt records with the
+right τ agrees to 10⁻⁵ or better (test below). These numbers rest on single runs of noise-free records.
+
 ## Tests
 `tests/test_simulator.py` compares the simulator with closed-form solutions for model A (d'Alembert solution
 with an elastic specimen, direct impact, the loading end of the SHTB, and the bonded elastic specimen of the SHTB
@@ -226,6 +279,10 @@ continued wavenumber, and that the settings of the analysis case take effect and
 `tests/test_files.py` checks that the settings TOML and the records CSV of all three setups are read back as
 written, that an incomplete analysis case is refused with the names of the keys, and that the comparison marks
 exactly the settings that differ.
+`tests/test_viscoelastic.py` checks the Kelvin–Voigt wavenumber (Im k < 0, the expansions for small ωτ, identity
+with the elastic models for τ = 0), the force operator, the decay of a pulse, the exact composition of the
+transfer functions, the analytic continuation used by the analysis, the band limit "auto", and the separation
+of Kelvin–Voigt records against the truth limited to the same band.
 
 ## Left out from wavePINN
 Measurement artefacts (gain, offset, drift, noise, spikes, clipping) and the preprocessing that removes them,

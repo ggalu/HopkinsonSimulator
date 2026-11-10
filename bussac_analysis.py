@@ -10,6 +10,8 @@ difference is marked. The analysis then runs with its own values, so that the ef
 wrong gauge position can be studied on the same records. Output in <out>/<name>/:
     bussac.json     analysis case, comparison with the simulation, end of the valid window, errors
     bussac.png      analysed records, separated waves, interface force and velocity, each against the truth
+    equilibrium.png separated forces at the input-bar and output-bar interfaces and their relative imbalance,
+                    to judge the force equilibrium of the specimen
     separated.txt   time and the separated quantities of both bars
 
 Errors are max and rms over the VALID window t < T - max over both bars of (x_max/c0) - valid_margin: the
@@ -70,30 +72,48 @@ ROOT = Path(__file__).resolve().parent
 def wavenumber_laplace(model: BarModel, omega: np.ndarray, eta: float) -> np.ndarray:
     """k(omega - i eta), Im k < 0 (decaying in the direction of travel).
 
-    Exact for Models A and B; for other models (Pochhammer-Chree) a second-order Taylor
-    expansion k(w) - i eta k'(w) - eta^2 k''(w)/2 on the (uniform) omega grid.
+    Exact for Models A and B, elastic or Kelvin-Voigt (1 + i omega tau becomes 1 + i s tau = 1 + eta tau
+    + i omega tau, which has no zeros for eta > 0); for other models (Pochhammer-Chree) a second-order
+    Taylor expansion k(w) - i eta k'(w) - eta^2 k''(w)/2 on the (uniform) omega grid.
     """
     omega = np.asarray(omega, dtype=float)
     s = omega - 1j * eta
     m = model.mat
+    kv = 1 + 1j * s * m.tau                         # Kelvin-Voigt factor; 1 for an elastic bar
     if isinstance(model, WaveEq1D):
-        return s / m.c0
+        return s / m.c0 if m.tau == 0 else s / (m.c0 * np.sqrt(kv))
     if isinstance(model, LoveRod):
-        # k^2 = s^2 / (c0^2 - nu^2 rg^2 s^2); for omega > 0, eta > 0 the radicand has Im > 0,
+        # k^2 = s^2 / (c0^2 kv - nu^2 rg^2 s^2); for omega > 0, eta > 0 the radicand has Im > 0,
         # so the principal root is continuous and gives Im k < 0 (propagating and evanescent)
-        return s / np.sqrt(m.c0 ** 2 - (m.nu * model.rg * s) ** 2)
-    k = np.real(model.wavenumber(omega))
+        return s / np.sqrt(m.c0 ** 2 * kv - (m.nu * model.rg * s) ** 2)
+    k = model.wavenumber(omega)
     dw = omega[1] - omega[0]
     k1 = np.gradient(k, dw)
     k2 = np.gradient(k1, dw)
     return k - 1j * eta * k1 - 0.5 * eta ** 2 * k2
 
 
-def default_f_max(model: BarModel) -> float:
-    """Band limit: 0.8 x Love cut-off for Model B, none otherwise."""
-    if isinstance(model, LoveRod):
-        return 0.8 * model.omega_cutoff / (2 * np.pi)
-    return np.inf
+# Kelvin-Voigt bars: the wave leaving the interface is damped by exp(-kappa x) on its way to a gauge at x,
+# so its reconstruction at the interface multiplies by exp(+kappa x). "auto" keeps this amplification below
+# AUTO_MAX_AMPLIFICATION at the farthest gauge. The value is a choice for noise-free synthetic records, not a
+# derived limit: on the example cases the separation stayed usable up to about 1e3-1e4 and became unstable
+# above. Measured records, with noise, need a lower value.
+AUTO_MAX_AMPLIFICATION = 1.0e3
+
+
+def default_f_max(model: BarModel, x_max: float = 0.0, f_nyquist: float = np.inf) -> float:
+    """Band limit "auto": 0.8 x Love cut-off for Model B, none otherwise; for a Kelvin-Voigt bar in addition
+    the frequency at which exp(kappa x_max) reaches AUTO_MAX_AMPLIFICATION."""
+    f = 0.8 * model.omega_cutoff / (2 * np.pi) if isinstance(model, LoveRod) else np.inf
+    if model.mat.tau > 0 and x_max > 0:
+        f_top = min(f, f_nyquist)
+        if not np.isfinite(f_top):
+            raise ValueError("a Kelvin-Voigt bar needs a finite Nyquist frequency for f_max = \"auto\"")
+        w = 2 * np.pi * np.linspace(0.0, f_top, 200001)
+        over = np.flatnonzero(-np.imag(model.wavenumber(w)) * x_max > np.log(AUTO_MAX_AMPLIFICATION))
+        if over.size:
+            f = w[over[0] - 1] / (2 * np.pi)
+    return f
 
 
 def separate_spectra(t, signals, positions, model: BarModel, eta: float = 1000.0, f_max: float | None = None,
@@ -122,7 +142,7 @@ def separate_spectra(t, signals, positions, model: BarModel, eta: float = 1000.0
     if not np.allclose(np.diff(t), dt, rtol=1e-6):
         raise ValueError("t must be uniformly sampled")
     n_fft = int(n_fft or next_pow2(4 * n))
-    f_max = default_f_max(model) if f_max is None else float(f_max)
+    f_max = default_f_max(model, float(x.max()), 0.5 / dt) if f_max is None else float(f_max)
 
     omega = 2 * np.pi * np.fft.rfftfreq(n_fft, dt)
     band = omega <= 2 * np.pi * f_max
@@ -168,7 +188,7 @@ def separate(t, signals, positions, model: BarModel, eta: float = 1000.0, f_max:
     signals : (n_g, N) strain records; positions : (n_g,) distances from the interface [m].
     model : bar model (A, B or C) used for the separation.
     eta : exponential-window damping [1/s].
-    f_max : band limit [Hz]; None -> default_f_max(model).
+    f_max : band limit [Hz]; None -> default_f_max (the rule of f_max = "auto").
     gauge_length : gauge length(s) [m]; 0 -> point gauges.
     outward : global direction of the bar's local +x axis (-1 input bar, +1 output bar).
 
@@ -225,7 +245,8 @@ def separate_case(case: dict, bar_models: dict, eta: float = 1000.0, f_max: floa
 
 NUMBER, TEXT, FLAG, POSITIONS = "number", "text", "true/false", "list of numbers"
 MATERIAL_KEYS = {"E": NUMBER, "rho": NUMBER, "nu": NUMBER, "radius": NUMBER}
-OPTIONAL_KEYS = {"bars.material_input.inner_radius": NUMBER, "bars.material_output.inner_radius": NUMBER}
+OPTIONAL_KEYS = {f"bars.{t}.{k}": NUMBER for t in ("material_input", "material_output")
+                 for k in ("inner_radius", "tau")}
 ANALYSIS_KEYS = {
     "name": TEXT, "records": TEXT, "settings": TEXT,
     "channels": ("averaged", "point"),
@@ -320,8 +341,9 @@ def compare_settings(acfg: dict, sim_cfg: dict) -> list[dict]:
     for table in ("material_input", "material_output"):
         sim_mat = sim_bars.get(table, sim_bars.get("material_input", {}))   # material_output defaults to input
         mat = acfg["bars"][table]
-        for k in (*MATERIAL_KEYS, "inner_radius"):
-            row(f"bars.{table}.{k}", mat.get(k, 0.0), sim_mat.get(k, 0.0 if k == "inner_radius" else None))
+        for k in (*MATERIAL_KEYS, "inner_radius", "tau"):
+            optional = k in ("inner_radius", "tau")         # default 0: solid, elastic bar
+            row(f"bars.{table}.{k}", mat.get(k, 0.0), sim_mat.get(k, 0.0 if optional else None))
     for k in ("input", "output", "gauge_length"):
         row(f"gauges.{k}", acfg["gauges"][k], sim_g.get(k))
     for k, v in acfg["separation"].items():
@@ -501,6 +523,68 @@ def plot_bussac(case: dict, res: dict, rec, ch: dict, t_valid: float, title: str
     return fig
 
 
+# Force equilibrium of the specimen: the forces at the two bar-specimen interfaces, N1 (input bar) and N2 (output
+# bar), both A E eps, the force through which the simulated specimen is coupled to the bars. The imbalance
+# (N1 - N2) / Nm with the mean Nm = (N1 + N2)/2 is evaluated only where |Nm| is at least EQUILIBRIUM_MIN_FORCE
+# times its peak in the valid window, because the ratio is meaningless while the forces are small (rise, unloading).
+EQUILIBRIUM_MIN_FORCE = 0.05
+
+
+def force_imbalance(n1, n2, valid, min_fraction: float = EQUILIBRIUM_MIN_FORCE):
+    """(N1 - N2)/Nm (NaN where not evaluated) and its largest magnitude in the valid window."""
+    nm = 0.5 * (n1 + n2)
+    peak = np.max(np.abs(nm[valid])) if np.any(valid) else 0.0
+    use = valid & (np.abs(nm) >= min_fraction * peak) & (peak > 0)
+    r = np.full(nm.shape, np.nan)
+    r[use] = (n1[use] - n2[use]) / nm[use]
+    return r, float(np.max(np.abs(r[use]))) if np.any(use) else float("nan")
+
+
+def equilibrium(case: dict, res: dict, valid) -> dict:
+    """Largest relative force imbalance of the separated and of the true interface forces."""
+    itf = case["interface"]
+    _, sep = force_imbalance(res["bar1"]["force_E"], res["bar2"]["force_E"], valid)
+    _, true = force_imbalance(itf["bar1"]["force_E"], itf["bar2"]["force_E"], valid)
+    return {"force": "A E eps", "min_force_fraction": EQUILIBRIUM_MIN_FORCE,
+            "max_relative_imbalance_separated": sep, "max_relative_imbalance_truth": true}
+
+
+def plot_equilibrium(case: dict, res: dict, t_valid: float, title: str, path, setup: str):
+    """Separated interface forces of the input and the output bar against each other, and their relative
+    imbalance, to judge the force equilibrium of the specimen; saved to ``path``, returns the (open) figure."""
+    import matplotlib.pyplot as plt
+    t = case["time"] * US
+    itf = case["interface"]
+    sgn, sense = (1.0, "tension +") if setup == "shtb" else (-1.0, "compression +")
+    valid = case["time"] < t_valid
+    fig, ax = plt.subplots(2, 1, figsize=(11, 8), sharex=True, gridspec_kw={"height_ratios": [3, 2]})
+    for bar, side, c in ((1, "input bar", COLORS[0]), (2, "output bar", COLORS[1])):
+        b = f"bar{bar}"
+        ax[0].plot(t, sgn * itf[b]["force_E"] / 1e3, color=c, lw=2.2, alpha=0.3, label=f"{side}, truth")
+        ax[0].plot(t, sgn * res[b]["force_E"] / 1e3, color=c, lw=1.0, label=f"{side}, Bussac")
+    ax[0].set(title=f"A) Interface forces A·E·ε ({sense})", ylabel="force [kN]")
+    r_sep, m_sep = force_imbalance(res["bar1"]["force_E"], res["bar2"]["force_E"], valid)
+    r_true, m_true = force_imbalance(itf["bar1"]["force_E"], itf["bar2"]["force_E"], valid)
+    ax[1].plot(t, 100 * r_true, color="k", lw=2.2, alpha=0.3, label=f"truth (max {100 * m_true:.1f} %)")
+    ax[1].plot(t, 100 * r_sep, color=COLORS[4], lw=1.0, label=f"Bussac (max {100 * m_sep:.1f} %)")
+    for y in (-5.0, 5.0):
+        ax[1].axhline(y, color="k", ls="--", lw=0.8, label="±5 %" if y > 0 else None)
+    ax[1].axhline(0.0, color="#888888", lw=0.8)
+    ax[1].set(title=f"B) Relative imbalance (N_input − N_output) / mean, where |mean| ≥ "
+                    f"{100 * EQUILIBRIUM_MIN_FORCE:.0f} % of its peak", xlabel="t [µs]", ylabel="imbalance [%]")
+    finite = r_sep[np.isfinite(r_sep)]
+    if finite.size:
+        lim = min(max(10.0, 110 * np.max(np.abs(finite))), 100.0)
+        ax[1].set_ylim(-lim, lim)
+    for a in ax:
+        a.axvspan(t_valid * US, t[-1], color=INVALID, lw=0, zorder=0)
+        a.legend(fontsize=8, loc="best")
+    fig.suptitle(f"{title}: force equilibrium of the specimen; grey: outside the valid window")
+    fig.tight_layout()
+    fig.savefig(path)
+    return fig
+
+
 def write_separated(path, t, res, t_valid):
     cols, names = [t * US], ["t[us]"]
     for b in ("bar1", "bar2"):
@@ -543,19 +627,24 @@ def run(acfg_path: Path, out_root: Path, show: bool):
     err = metrics(data, res, data["time"] < t_valid, per_bar=setup == "direct_impact")
     out = out_root / acfg["name"]
     out.mkdir(parents=True, exist_ok=True)
+    eq = equilibrium(data, res, data["time"] < t_valid)
     report = {"records": str(rec_path), "settings": str(set_path), "analysis_case": acfg,
               "f_max_used": [res["bar1"]["f_max"], res["bar2"]["f_max"]],
-              "comparison": rows, "t_valid_end_us": t_valid * US, "errors": err}
+              "comparison": rows, "t_valid_end_us": t_valid * US, "errors": err, "equilibrium": eq}
     (out / "bussac.json").write_text(to_json(report))
     write_separated(out / "separated.txt", data["time"], res, t_valid)
     title = (f"{acfg['name']}: Bussac with model {acfg['bars']['bar_model']} on the {acfg['channels']} records "
              f"of {data['name']}")
-    fig = plot_bussac(data, res, rec, ch, t_valid, title, out / "bussac.png", setup)
-    if show:
-        fig.canvas.manager.set_window_title(f"{acfg['name']}: Bussac analysis")
-    else:
-        plt.close(fig)
-    print(f"{acfg['name']}: valid up to {t_valid * US:.0f} µs; {summary_line(err)} -> {out}")
+    figs = {"Bussac analysis": plot_bussac(data, res, rec, ch, t_valid, title, out / "bussac.png", setup),
+            "force equilibrium": plot_equilibrium(data, res, t_valid, title, out / "equilibrium.png", setup)}
+    for name, fig in figs.items():
+        if show:
+            fig.canvas.manager.set_window_title(f"{acfg['name']}: {name}")
+        else:
+            plt.close(fig)
+    print(f"{acfg['name']}: valid up to {t_valid * US:.0f} µs; {summary_line(err)}; force imbalance max "
+          f"{100 * eq['max_relative_imbalance_separated']:.1f} % (truth "
+          f"{100 * eq['max_relative_imbalance_truth']:.1f} %) -> {out}")
 
 
 def main():

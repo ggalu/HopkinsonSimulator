@@ -1,0 +1,97 @@
+# Case SHTB: split Hopkinson tension bar. A tubular striker slides over the input bar, hits a flange screwed
+# onto the far end of the input bar and pulls it, which sends a tensile pulse into the input bar. The
+# specimen is bonded between the input and the output bar and carries tension. Love rod for bars and striker.
+#
+# Run (results in results/<name>/):
+#   python hopkinson_simulator.py simulation_cases/SHTB.toml
+# Then the Bussac analysis: python bussac_analysis.py analysis_cases/SHTB.toml
+# SI units throughout (m, s, Pa, kg/m^3, Hz). Strain is dimensionless, tension positive.
+# Global x points from the input bar towards the output bar. Gauge positions are distances from the
+# specimen face into each bar; the interface waves of the ground truth are defined at the specimen faces.
+#
+#   flange | input bar | specimen | output bar | free end
+#     ^-- striker (around the input bar, moving in -x) hits the flange from the right
+
+name = "SHTB"                    # results folder name (default: file name without .toml)
+setup = "shtb"                   # "shpb", "direct_impact" or "shtb"
+bar_model = "B"                  # A: 1D wave equation, B: Love rod, C: Pochhammer-Chree (1st mode, solid bars only)
+
+# ---------------------------------------------------------------- bars
+[bars]
+length_incident = 2.7            # input bar length, flange to specimen [m]
+length_transmitted = 2.7         # output bar length, specimen to free end [m]
+far_end_reflections = true       # true: free far end of the output bar; false: absorbing
+
+[bars.material]                  # Al 7075, nominal handbook values; used for both bars
+E = 71.7e9                       # Young's modulus [Pa]
+rho = 2810.0                     # density [kg/m^3]
+nu = 0.33                        # Poisson's ratio (enters the dispersion of models B and C)
+radius = 8.0e-3                  # bar radius [m] (16 mm diameter)
+# A different output-bar material can be given in a [bars.material_transmitted] table
+# with the same keys; it defaults to [bars.material].
+
+# ---------------------------------------------------------------- striker
+[striker]                        # tube sliding over the input bar; its far (right) end is free
+length = 0.8                     # [m]; incident pulse duration about 2 length / c_striker = 1.1 ms
+velocity = -5.0                  # initial velocity [m/s]; negative = towards the flange (-x)
+impact_time = 20.0e-6            # time of first contact with the flange [s]
+# bar_model = "A"                # dispersion model of the striker (default: bar_model above)
+
+[striker.material]               # POM (Delrin): ASSUMED nominal values, linear elastic (no viscoelasticity)
+E = 3.0e9                        # Young's modulus [Pa]
+rho = 1420.0                     # density [kg/m^3]
+nu = 0.35                        # Poisson's ratio
+radius = 20.0e-3                 # outer radius [m] (40 mm diameter)
+inner_radius = 8.0e-3            # inner radius [m] (16 mm diameter)
+
+# ---------------------------------------------------------------- flange
+[flange]                         # steel transfer flange on the far end of the input bar, treated as a rigid mass
+diameter = 0.04                  # [m]
+length = 0.02                    # [m]
+rho = 7850.0                     # density [kg/m^3]; mass = rho * pi d^2/4 * length = 0.197 kg
+# mass = 0.15                    # [kg]: overrides the value from the dimensions
+
+# ---------------------------------------------------------------- strain gauges
+[gauges]
+incident = [0.3, 0.85]           # gauge positions on the input bar [m from the specimen face]
+transmitted = [0.3, 0.85]        # gauge positions on the output bar [m from the specimen face]
+gauge_length = 2.0e-3            # active gauge length [m]
+averaging = true                 # true: records are averaged over the gauge length
+
+# ---------------------------------------------------------------- specimen
+[specimen]
+# Bonded to both bars. Dimensions ASSUMED (gauge section of a round tensile specimen). With the striker
+# above, the nominal incident strain is about 4.3e-4 (force about 6 kN), far above the yield force of the
+# specimen (about 0.44 kN), so the specimen yields. Its strain rate is about 260 /s during the first
+# pulse, and its plastic strain reaches about 0.43 at the end of the 2 ms record.
+# The specimen model has no necking and no failure, and uses engineering stress and strain.
+kind = "lumped"                  # "lumped": uniform stress (equilibrium), "fd": 1D finite-difference model with wave propagation
+length = 10.0e-3                 # specimen length [m]
+diameter = 4.0e-3                # specimen diameter [m]
+# Used only by kind = "fd" (defaults shown):
+# n_cells = 40                    # number of cells along the specimen
+# cfl = 0.5                        # time step as fraction of the CFL limit
+# viscosity = 0.3                  # linear artificial viscosity (stability)
+# rate_filter_time = 0.5e-6       # strain-rate filter time constant [s] (stability)
+
+[specimen.material]              # commercially pure Al (1100-O like), engineering values
+E = 69.0e9                       # Young's modulus [Pa]
+rho = 2710.0                     # density [kg/m^3] (used by the fd model)
+sigma0 = 35.0e6                  # initial yield stress [Pa]
+H = 200.0e6                      # linear hardening (plastic) modulus [Pa]
+C = 0.015                        # Johnson-Cook rate sensitivity: sigma_y *= 1 + C ln(edot/edot0)
+edot0 = 1.0                      # reference strain rate [1/s]
+rate_dependent = true            # false: rate-independent plasticity
+tension_cutoff = false           # must be false: the specimen is bonded to the bars and carries tension
+
+# ---------------------------------------------------------------- time axis and solver
+[sampling]
+rate = 5.0e6                     # sampling rate [Hz]
+duration = 2.0e-3                # record length [s]
+truth_margin = 100.0e-6          # simulated beyond the record end, then cropped [s] (avoids end ringing)
+n_sub = 10                       # substeps per sample for the striker-flange contact and the specimen
+pad_factor = 8                   # FFT zero padding factor (wrap-around protection)
+
+[coupling]                       # fixed-point iteration between the loading end, the bars and the specimen
+max_iter = 80                    # maximum number of passes
+tol = 1.0e-8                     # relative change of the waves between passes

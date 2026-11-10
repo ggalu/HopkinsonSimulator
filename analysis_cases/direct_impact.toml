@@ -1,0 +1,31 @@
+# Bussac analysis of the simulation case simulation_cases/direct_impact.toml.
+#
+# Run the simulation first, then the analysis (results in results/<name>/):
+#   python hopkinson_simulator.py simulation_cases/direct_impact.toml
+#   python bussac_analysis.py analysis_cases/direct_impact.toml
+# SI units throughout. The analysis sees only the gauge records; the ground truth stored in the simulation
+# file is used only to compute the errors.
+
+name = "direct_impact_bussac"    # results folder name (default: file name without .toml)
+simulation = "results/direct_impact/simulation.h5" # simulation file, relative to the project root
+records = "records"              # "records": gauge-averaged records (if [gauges] averaging = true in the
+                                 # simulation); "records_point": strain at the gauge centres
+
+[separation]
+eta = 1000.0                     # Laplace damping [1/s]: removes the singularities at DC and at the
+                                 # frequencies n c / (2 D) of two gauges a distance D apart. Larger: better
+                                 # conditioned, but errors grow like exp(eta t) late in the record
+# f_max = 200.0e3                # band limit [Hz]; default 0.8 x the Love cut-off for model B
+gauge_length_correction = true   # include the averaging over the gauge length in the gauge model
+valid_margin = 20.0e-6           # errors are evaluated for t < T - x_max/c0 - valid_margin [s]
+
+# What the analysis assumes about the bars and the gauges. Omitted: the values of the simulation.
+# Give them to study the effect of a wrong bar model, material or gauge position.
+[bars]
+# bar_model = "A"                # A: 1D wave equation, B: Love rod, C: Pochhammer-Chree (1st mode)
+# material = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }
+# material_transmitted = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }
+
+[gauges]                         # distances from the interface [m], one per gauge of the simulation
+# incident = [0.301, 0.85]
+# transmitted = [0.3, 0.85]

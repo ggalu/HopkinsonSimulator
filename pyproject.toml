@@ -1,0 +1,12 @@
+[project]
+name = "hopkinson-simulator"
+version = "0.1.0"
+description = "Hopkinson bar simulator with exact interface ground truth, and Bussac wave separation"
+requires-python = ">=3.11"
+dependencies = ["numpy", "scipy", "matplotlib", "h5py"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

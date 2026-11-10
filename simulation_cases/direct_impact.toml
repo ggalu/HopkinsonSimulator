@@ -1,0 +1,80 @@
+# Case direct_impact: direct impact of a long Al 7075 projectile bar on a small polymer-like
+# specimen that sits on a polycarbonate output bar; Love rod (dispersive) for both bars.
+#
+# Run (results in results/<name>/):
+#   python hopkinson_simulator.py simulation_cases/direct_impact.toml
+# Then the Bussac analysis: python bussac_analysis.py analysis_cases/direct_impact.toml
+# SI units throughout (m, s, Pa, kg/m^3, Hz). Strain is dimensionless, tension positive.
+# Distances along a bar are measured from the bar-specimen interface into the bar.
+#
+# Direct impact: the input bar is the projectile. It moves at [impact].velocity towards the specimen
+# and hits it at [impact].time; there is no prescribed pulse ([source] and [pulse] are not used).
+# The input-bar gauges record the wave that the contact force sends back into the projectile, and
+# later its echo from the free far end.
+
+name = "direct_impact"           # results folder name (default: file name without .toml)
+setup = "direct_impact"          # "shpb", "direct_impact" or "shtb"
+bar_model = "B"                  # A: 1D wave equation, B: Love rod, C: Pochhammer-Chree (1st mode)
+
+[impact]
+velocity = 5.0                   # initial velocity of the input bar (projectile), towards the specimen [m/s]
+time = 20.0e-6                   # time of first contact [s] (pre-trigger before it)
+
+# ---------------------------------------------------------------- bars
+[bars]
+length_incident = 2.0            # input bar (projectile) length [m]
+length_transmitted = 1.005       # output bar length [m]
+far_end_reflections = true       # true: free far ends (strain changes sign on reflection); false: absorbing
+
+[bars.material]                  # input bar: Al 7075, nominal handbook values
+E = 71.7e9                       # Young's modulus [Pa]
+rho = 2810.0                     # density [kg/m^3]
+nu = 0.33                        # Poisson's ratio (enters the dispersion of models B and C)
+radius = 8.0e-3                  # bar radius [m] (16 mm diameter)
+
+[bars.material_transmitted]      # output bar: polycarbonate, treated as linear elastic (no viscoelasticity)
+E = 2.3e9                        # Young's modulus [Pa]
+rho = 1200.0                     # density [kg/m^3]
+nu = 0.37                        # Poisson's ratio: ASSUMED (typical value for polycarbonate)
+radius = 8.15e-3                 # bar radius [m] (16.3 mm diameter)
+
+# ---------------------------------------------------------------- strain gauges
+[gauges]
+incident = [0.13, 0.53]          # gauge positions on the input bar [m from the impacting end]
+transmitted = [0.12, 0.50]       # gauge positions on the output bar [m from the interface]
+gauge_length = 2.0e-3            # active gauge length [m]
+averaging = true                 # true: records are averaged over the gauge length
+
+# ---------------------------------------------------------------- specimen
+[specimen]
+kind = "lumped"                  # "lumped": uniform stress (equilibrium), "fd": 1D finite-difference model with wave propagation
+length = 3.0e-3                  # specimen length [m]: ASSUMED (not given), aspect ratio 1
+diameter = 3.0e-3                # specimen diameter [m]
+# Used only by kind = "fd" (defaults shown):
+# n_cells = 40                    # number of cells along the specimen
+# cfl = 0.5                        # time step as fraction of the CFL limit
+# viscosity = 0.3                  # linear artificial viscosity (stability)
+# rate_filter_time = 0.5e-6       # strain-rate filter time constant [s] (stability)
+# contact_tolerance = 1.0e-6      # a closed face opens only if the tension exceeds this * E_bar * A_bar
+
+[specimen.material]              # bilinear elastic-plastic, rate independent, engineering values
+E = 2.4e9                        # Young's modulus [Pa]
+rho = 1200.0                     # density [kg/m^3]: ASSUMED, used only by the fd model
+sigma0 = 30.0e6                  # yield stress [Pa]
+Et = 0.3e9                       # tangent modulus after yield, slope of stress vs TOTAL strain [Pa].
+                                 # Converted to the plastic modulus H = E Et / (E - Et) = 343 MPa;
+                                 # give H instead of Et to set the slope vs plastic strain directly.
+rate_dependent = false           # true: sigma_y *= 1 + C ln(edot/edot0) (then set C and edot0)
+tension_cutoff = true            # true: interfaces cannot carry tension (unilateral contact)
+
+# ---------------------------------------------------------------- time axis and solver
+[sampling]
+rate = 5.0e6                     # sampling rate [Hz]
+duration = 2.0e-3                # record length [s]; includes the first far-end echoes of both bars
+truth_margin = 100.0e-6          # simulated beyond the record end, then cropped [s] (avoids end ringing)
+n_sub = 10                       # specimen substeps per sample
+pad_factor = 8                   # FFT zero padding factor (wrap-around protection)
+
+[coupling]                       # fixed-point iteration between bars and specimen
+max_iter = 80                    # maximum number of passes
+tol = 1.0e-8                     # relative change of the outgoing waves between passes

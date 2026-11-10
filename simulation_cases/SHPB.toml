@@ -1,0 +1,81 @@
+# Case SHPB: split Hopkinson pressure bar. Love rod (dispersive), prescribed sharp-rise pulse (content up
+# to a few 100 kHz), lumped elastic-plastic specimen in unilateral contact with the bars.
+#
+# Run (results in results/<name>/):
+#   python hopkinson_simulator.py simulation_cases/SHPB.toml
+# Then the Bussac analysis: python bussac_analysis.py analysis_cases/SHPB.toml
+# SI units throughout (m, s, Pa, kg/m^3, Hz). Strain is dimensionless, tension positive.
+# Distances along a bar are measured from the bar-specimen interface into the bar.
+
+name = "SHPB"                    # results folder name (default: file name without .toml)
+setup = "shpb"                   # "shpb", "direct_impact" or "shtb"
+bar_model = "B"                  # A: 1D wave equation, B: Love rod, C: Pochhammer-Chree (1st mode)
+
+# ---------------------------------------------------------------- bars
+[bars]
+length_incident = 2.0            # input bar length [m]
+length_transmitted = 2.0         # output bar length [m]
+far_end_reflections = true       # true: free far ends (strain changes sign on reflection); false: absorbing
+
+[bars.material]                  # Al 7075, nominal handbook values; used for both bars
+E = 71.7e9                       # Young's modulus [Pa]
+rho = 2810.0                     # density [kg/m^3]
+nu = 0.33                        # Poisson's ratio (enters the dispersion of models B and C)
+radius = 8.0e-3                  # bar radius [m] (16 mm diameter)
+# A different output-bar material can be given in a [bars.material_transmitted] table
+# with the same keys; it defaults to [bars.material].
+
+# ---------------------------------------------------------------- strain gauges
+[gauges]
+incident = [0.3, 0.85]           # gauge positions on the input bar [m from the interface]
+transmitted = [0.3, 0.85]        # gauge positions on the output bar [m from the interface]
+gauge_length = 2.0e-3            # active gauge length [m]
+averaging = true                 # true: records are averaged over the gauge length
+
+# ---------------------------------------------------------------- incident pulse
+[source]
+distance_from_interface = 2.0    # where the prescribed right-going pulse is defined [m] (impact end)
+
+[pulse]                          # trapezoid with smooth ramps
+preset = "sharp"                 # label; "trapezoid" (30/150/30 us) or "sharp" (4/150/10 us).
+                                 # The explicit times below override the preset values.
+amplitude = -1.0e-3              # plateau strain (negative = compression)
+t_start = 20.0e-6                # pulse start at the source position [s]
+rise = 4.0e-6                    # 0-100 % rise time [s]
+plateau = 150.0e-6               # plateau duration [s]
+fall = 10.0e-6                   # 100-0 % fall time [s]
+ramp = "smoothstep7"             # ramp shape: "linear" (C0), "cosine" (C1), "smoothstep7" (C3)
+
+# ---------------------------------------------------------------- specimen
+[specimen]
+kind = "lumped"                  # "lumped": uniform stress (equilibrium), "fd": 1D finite-difference model with wave propagation
+length = 5.0e-3                  # specimen length [m]
+diameter = 0.01                  # specimen diameter [m]
+# Used only by kind = "fd" (defaults shown):
+# n_cells = 40                    # number of cells along the specimen
+# cfl = 0.5                        # time step as fraction of the CFL limit
+# viscosity = 0.3                  # linear artificial viscosity (stability)
+# rate_filter_time = 0.5e-6       # strain-rate filter time constant [s] (stability)
+# contact_tolerance = 1.0e-6      # a closed face opens only if the tension exceeds this * E_bar * A_bar
+
+[specimen.material]              # commercially pure Al (1100-O like), engineering values
+E = 69.0e9                       # Young's modulus [Pa]
+rho = 2710.0                     # density [kg/m^3] (used by the fd model)
+sigma0 = 35.0e6                  # initial yield stress [Pa]
+H = 200.0e6                      # linear hardening (plastic) modulus [Pa]
+C = 0.015                        # Johnson-Cook rate sensitivity: sigma_y *= 1 + C ln(edot/edot0)
+edot0 = 1.0                      # reference strain rate [1/s]
+rate_dependent = true            # false: rate-independent plasticity
+tension_cutoff = true            # true: interfaces cannot carry tension (unilateral contact)
+
+# ---------------------------------------------------------------- time axis and solver
+[sampling]
+rate = 5.0e6                     # sampling rate [Hz]
+duration = 1.0e-3                # record length [s]
+truth_margin = 100.0e-6          # simulated beyond the record end, then cropped [s] (avoids end ringing)
+n_sub = 10                       # specimen substeps per sample
+pad_factor = 8                   # FFT zero padding factor (wrap-around protection)
+
+[coupling]                       # fixed-point iteration between bars and specimen
+max_iter = 80                    # maximum number of passes
+tol = 1.0e-8                     # relative change of the outgoing waves between passes

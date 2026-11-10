@@ -17,6 +17,11 @@ pressure setups are unchanged. On the SHPB and direct-impact cases both programs
 of wavePINN while the records were stored in HDF5. The text files store 13 significant digits, which changes the
 errors of the analysis by less than 10⁻⁹ of their values. The specimen of the tension bar is new (see "SHTB").
 
+The methods (the spectral propagator of the simulator, the bar models and the Bussac separation), with two worked
+examples (SHPB and SHTB), are described in the report [reports/theory/report.tex](reports/theory/report.tex).
+Build the PDF with `make` in `reports/theory/` (needs latexmk); `python reports/theory/make_figures.py` remakes
+its figures and the numbers it quotes.
+
 ## Layout
 ```
 hopkinson_simulator.py   bar models, propagation, pulses, specimens, the three setups, output files, figure
@@ -24,6 +29,8 @@ bussac_analysis.py       analysis case check, comparison of settings, Bussac sep
 simulation_cases/        SHPB.toml, direct_impact.toml, direct_impact_viscoelastic.toml, SHTB.toml
 analysis_cases/          the same four names
 tests/                   pytest tests of both programs
+reports/theory/          report on the methods (LaTeX) and the script of its figures
+reports/template/        LaTeX style of the reports
 results/                 output (not in git)
 ```
 

@@ -295,3 +295,6 @@ of Kelvin–Voigt records against the truth limited to the same band.
 Measurement artefacts (gain, offset, drift, noise, spikes, clipping) and the preprocessing that removes them,
 the threaded coupler with compliant joints, the bored far end of the output bar, holders and connectors, a
 specimen force read from a file, and the identification of setup parameters from experiments.
+
+## License
+MIT; see [LICENSE](LICENSE).

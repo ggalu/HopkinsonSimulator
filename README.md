@@ -12,11 +12,6 @@ case and writes the gauge records with the true interface waves (a CSV file) and
 records and compares the separated waves with the stored truth. It reads the simulation settings only to show
 where its own settings differ from them.
 
-The code was extracted from the wavePINN project on 2026-11-10. The simulator and the separation of the
-pressure setups are unchanged. On the SHPB and direct-impact cases both programs gave results identical to those
-of wavePINN while the records were stored in HDF5. The text files store 13 significant digits, which changes the
-errors of the analysis by less than 10⁻⁹ of their values. The specimen of the tension bar is new (see "SHTB").
-
 The methods (the spectral propagator of the simulator, the bar models and the Bussac separation), with two worked
 examples (SHPB and SHTB), are described in the report [reports/theory/report.tex](reports/theory/report.tex).
 Build the PDF with `make` in `reports/theory/` (needs latexmk); `python reports/theory/make_figures.py` remakes
@@ -36,7 +31,7 @@ results/                 output (not in git)
 
 ## Running
 The programs need Python 3.11 or later with numpy, scipy and matplotlib (pytest for the tests). In the
-wavePINN conda environment:
+Python environment:
 ```bash
 python hopkinson_simulator.py simulation_cases/SHPB.toml          # -> results/SHPB/
 python bussac_analysis.py analysis_cases/SHPB.toml                # -> results/SHPB_bussac/
@@ -121,8 +116,7 @@ therefore not prescribed: it is the wave that leaves the loading end, stored as 
 The specimen is either specimen model with `tension_cutoff = false`: its faces are bonded to the bars and carry
 tension. The program stops with an error if the case file asks for unilateral contact. The interface waves are
 defined at the specimen faces, and gauge positions are distances from the specimen face, as in the pressure
-setups. This specimen coupling is new; in wavePINN the two bars of the tension setup were joined by a threaded
-coupler. It is checked by two tests with model A: with a very stiff specimen the incident wave from the loading
+setups. It is checked by two tests with model A: with a very stiff specimen the incident wave from the loading
 end arrives unchanged in the output bar, and an elastic specimen transmits the incident wave exactly as a
 massless spring of compliance C = Ls/(Es As), with T(ω) = 1/(1 + iωZC/2).
 
@@ -290,11 +284,6 @@ exactly the settings that differ.
 with the elastic models for τ = 0), the force operator, the decay of a pulse, the exact composition of the
 transfer functions, the analytic continuation used by the analysis, the band limit "auto", and the separation
 of Kelvin–Voigt records against the truth limited to the same band.
-
-## Left out from wavePINN
-Measurement artefacts (gain, offset, drift, noise, spikes, clipping) and the preprocessing that removes them,
-the threaded coupler with compliant joints, the bored far end of the output bar, holders and connectors, a
-specimen force read from a file, and the identification of setup parameters from experiments.
 
 ## License
 MIT; see [LICENSE](LICENSE).

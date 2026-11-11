@@ -19,7 +19,7 @@ IMPACT = load_config(CASES / "direct_impact.toml")
 SHTB = load_config(CASES / "SHTB.toml")
 MAT = BarMaterial(**SHPB["bars"]["material_input"])
 ELASTIC = {"sigma0": 1e12, "rate_dependent": False}
-TRAPEZOID = {"preset": "trapezoid", "rise": 30e-6, "fall": 30e-6}
+TRAPEZOID = {"rise": 30e-6, "fall": 30e-6}
 
 
 def variant(cfg, **over):
@@ -72,7 +72,7 @@ def test_shtb_loading_end_model_a():
     """Striker on a rigid flange, before any echo (model A, a specimen of bar size and very high stiffness,
     so that it transmits the wave unchanged): f(t) = -(v_s/c1) Z_s/(Z1 + Z_s) (1 - exp(-(t - t_i)/tau)),
     tau = m/(Z1 + Z_s); the input-bar gauges see f delayed by (L1 - d)/c1, the output-bar gauges by (L1 + d)/c1."""
-    cfg = variant(SHTB, bar_model="A", sampling={"duration": 1000e-6},
+    cfg = variant(SHTB, bar_model="A", striker={"bar_model": "A"}, sampling={"duration": 1000e-6},
                   specimen={"diameter": 0.016, "material": {**ELASTIC, "E": 1e15}})
     case, sim = generate(cfg)
     m1, ms = sim.mat1, sim.mat_s
@@ -92,7 +92,8 @@ def test_shtb_elastic_specimen_is_a_spring():
     """An elastic lumped specimen bonded between two equal bars (model A) is a massless spring of compliance
     C = Ls/(Es As). Before any echo it transmits the incident wave with T = 1/(1 + i omega Z C/2)
     (time factor exp(i omega t)), i.e. (Z C/2) db2/dt + b2 = a1."""
-    cfg = variant(SHTB, bar_model="A", sampling={"duration": 1400e-6}, specimen={"material": ELASTIC})
+    cfg = variant(SHTB, bar_model="A", striker={"bar_model": "A"}, sampling={"duration": 1400e-6},
+                  specimen={"material": ELASTIC})
     case, sim = generate(cfg)
     spc, m = sim.specimen, sim.mat1
     tau = m.impedance * spc.Ls / (spc.mat.E * spc.As) / 2

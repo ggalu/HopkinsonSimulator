@@ -30,9 +30,9 @@ setup = "shpb"                   # "shpb", "direct_impact" or "shtb" (error scal
 # A rho (s/k)^2 eps. For model B it gives the cut-off frequency on which f_max = "auto" is based.
 # The material enters through c0 = sqrt(E/rho), and for models B and C also through nu and the radius.
 bar_model = "B"                  # A: 1D wave equation, B: Love rod, C: Pochhammer-Chree (1st mode)
-material_input = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }  # input bar
-material_output = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }  # output bar
-                                 # E [Pa], rho [kg/m^3], nu [-], radius [m]; optional inner_radius [m] for a tube
+material_input = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3, inner_radius = 0.0, tau = 0.0 }  # input bar
+material_output = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3, inner_radius = 0.0, tau = 0.0 }  # output bar
+                                 # E [Pa], rho [kg/m^3], nu [-], radius [m], inner_radius [m] (0: solid bar, > 0: tube)
                                  # and tau [s], the Kelvin-Voigt retardation time (0: elastic)
 
 [gauges]                         # assigned in order to the gauges I1, I2, ... and O1, O2, ... of the records file

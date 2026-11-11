@@ -17,7 +17,7 @@ from test_bussac import full_acfg
 CASES = Path(__file__).resolve().parents[1] / "simulation_cases"
 SHPB = load_config(CASES / "SHPB.toml")
 PC = BarMaterial(E=2.3e9, rho=1200.0, nu=0.37, radius=8.15e-3, tau=1e-7)
-TRAPEZOID = {"preset": "trapezoid", "rise": 30e-6, "fall": 30e-6}
+TRAPEZOID = {"rise": 30e-6, "fall": 30e-6}
 
 
 @pytest.mark.parametrize("model", [WaveEq1D, LoveRod])
@@ -114,7 +114,8 @@ def _band_limited(x, t, eta, f_max):
 def test_separation_of_kelvin_voigt_records(model):
     """With the right tau the separated waves equal the truth limited to the same band (to 1e-5); assuming
     an elastic bar is clearly worse against the full truth. Smooth pulse, both bars viscoelastic."""
-    cfg = deep_merge(SHPB, {"bar_model": model, "pulse": TRAPEZOID, "bars": {"material_input": {"tau": 3e-7}}})
+    cfg = deep_merge(SHPB, {"bar_model": model, "pulse": TRAPEZOID,
+                        "bars": {"material_input": {"tau": 3e-7}, "material_output": {"tau": 3e-7}}})
     case, _ = generate(cfg)
     data = {**case, "channels": {k: case["channels"][k] for k in ("names", "bar", "records", "records_point")}}
     acfg = full_acfg(cfg)

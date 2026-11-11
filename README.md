@@ -37,9 +37,11 @@ python hopkinson_simulator.py simulation_cases/SHPB.toml          # -> results/S
 python bussac_analysis.py analysis_cases/SHPB.toml                # -> results/SHPB_bussac/
 python hopkinson_simulator.py simulation_cases/*.toml --headless  # all cases, figures saved but not shown
 python bussac_analysis.py analysis_cases/*.toml --headless
-python -m pytest -q                                               # 42 tests, about 50 s
+python -m pytest -q                                               # 52 tests, about 50 s
 ```
-Without `--headless` the figures are also shown, and the program ends when all windows are closed.
+On start, the simulator checks each case file (see "Simulation case file") and prints its settings: one line
+per key with its value and a short comment on its role, under a heading with a comment for each table. It
+then prints "Performing simulation, standby ..." and starts the coupling iteration. Without `--headless` the figures are also shown, and the program ends when all windows are closed.
 `--out <dir>` changes the results root.
 
 | program | output in `results/<name>/` |
@@ -127,13 +129,24 @@ and the striker material are assumptions. The specimen model has no necking or f
 
 ## Simulation case file
 One self-contained, commented TOML file per case. The tables are: `[bars]` (with the bar lengths
-`length_input` and `length_output`) and `[bars.material_input]` (optional
-`[bars.material_output]`, which defaults to the input-bar material), `[gauges]` (with the gauge positions
-`input` and `output`), the loading (`[source]` and `[pulse]` for the SHPB, `[impact]` for
+`length_input` and `length_output`), `[bars.material_input]` and `[bars.material_output]`, `[gauges]` (with
+the gauge positions `input` and `output`), the loading (`[source]` and `[pulse]` for the SHPB, `[impact]` for
 the direct impact, `[striker]`, `[striker.material]` and `[flange]` for the SHTB), `[specimen]` and
-`[specimen.material]`, `[sampling]` and `[coupling]`. A bar material may contain `tau`, the Kelvin–Voigt
-retardation time (see above). Every parameter is commented in the example files. To make a
-new case, copy one, rename it and edit it. SI units throughout; strain, stress and force are positive in tension.
+`[specimen.material]`, `[sampling]` and `[coupling]`. A material table (of a bar or of the striker) has the keys
+`E`, `rho`, `nu`, `radius`, `inner_radius` (0 for a solid bar) and `tau`, the Kelvin–Voigt retardation time
+(0 for an elastic bar; see above). Every parameter is commented in the example files. To make a new case, copy
+one, rename it and edit it. SI units throughout; strain, stress and force are positive in tension.
+
+Every key is required, and no other key is accepted, as in the analysis case. The simulator checks the case
+against a registry of the keys (`SIMULATION_KEYS` in `hopkinson_simulator.py`), which gives for each key its
+type and a comment on its role. A missing, unknown or wrongly typed key stops the program, with a message that
+names all such keys. The tables of one setup are required for that setup and refused for the others, and the
+options of the finite-difference specimen (`n_cells`, `cfl`, `viscosity`, `rate_filter_time`,
+`contact_tolerance`) are required with `kind = "fd"` and refused with `kind = "lumped"`. Keys of the material
+law that a case does not use, such as `C` and `edot0` with `rate_dependent = false`, are still required. No key
+has a default. The keys of earlier versions that gave a choice between alternatives are refused with a hint:
+`pulse.preset` (give `rise`, `plateau` and `fall`), `specimen.material.Et` (give the plastic modulus
+H = E Et/(E − Et)) and `flange.mass` (the mass follows from the dimensions and the density).
 
 ## Simulation output
 The simulator writes three text files into `results/<name>/`. Global x points from the input bar towards the
@@ -185,9 +198,9 @@ setup = "shpb"                               # "shpb", "direct_impact" or "shtb"
 # velocity = 5.0                             # impact velocity v0 [m/s]
 [bars]
 bar_model = "B"                              # A, B or C
-material_input = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }        # input bar
-material_output = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3 }       # output bar
-                                             # optional: inner_radius [m] (tube) and tau [s] (Kelvin-Voigt); default 0
+material_input = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3, inner_radius = 0.0, tau = 0.0 }
+material_output = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3, inner_radius = 0.0, tau = 0.0 }
+                                             # inner_radius [m] (0: solid, > 0: tube), tau [s] (Kelvin-Voigt; 0: elastic)
 [gauges]
 input = [0.3, 0.85]                          # [m from the interface], in the order I1, I2, …
 output = [0.3, 0.85]                         # in the order O1, O2, …
@@ -278,8 +291,9 @@ the gauge records stored in a file are the propagations of the stored interface 
 `tests/test_bussac.py` checks that the separation is exact for model A (SHPB and SHTB) and for model C with the
 continued wavenumber, and that the settings of the analysis case take effect and are reported when they differ.
 `tests/test_files.py` checks that the settings TOML and the records CSV of all three setups are read back as
-written, that an incomplete analysis case is refused with the names of the keys, and that the comparison marks
-exactly the settings that differ.
+written, that an incomplete analysis case and an incomplete or wrong simulation case are refused with the names
+of the keys, that the example simulation cases are complete, that the printed settings list every key with its
+comment, and that the comparison marks exactly the settings that differ.
 `tests/test_viscoelastic.py` checks the Kelvin–Voigt wavenumber (Im k < 0, the expansions for small ωτ, identity
 with the elastic models for τ = 0), the force operator, the decay of a pulse, the exact composition of the
 transfer functions, the analytic continuation used by the analysis, the band limit "auto", and the separation

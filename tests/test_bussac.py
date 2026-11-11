@@ -42,7 +42,7 @@ def test_bussac_model_c_with_continued_wavenumber():
 def test_bussac_shtb_model_a():
     """The SHTB records end at 20-30 % of their peak; the error of the separation then grows towards the end of
     the record. With a 3 ms record the first 1.5 ms are recovered to about 1e-4 (2 ms record: about 4e-4)."""
-    case, r, err = _bussac(deep_merge(SHTB, {"bar_model": "A", "sampling": {"duration": 3e-3}}), t_end=1.5e-3)
+    case, r, err = _bussac(deep_merge(SHTB, {"bar_model": "A", "striker": {"bar_model": "A"}, "sampling": {"duration": 3e-3}}), t_end=1.5e-3)
     assert err < 1e-4, err
     f = case["interface"]["bar2"]["force_E"]
     valid = case["time"] < 1.5e-3

@@ -2,7 +2,8 @@
 
     python hopkinson_simulator.py simulation_cases/SHPB.toml [more.toml ...] [--out results] [--headless]
 
-Each case writes to <out>/<name>/ (name from the case file, default: the file name):
+Every key of a case file is required and no other key is accepted (see SIMULATION_KEYS); on start the
+program prints each setting with a comment on its role. Each case writes to <out>/<name>/:
     simulation.toml  the case settings as read, and a [derived] table computed from them
     simulation.csv   gauge records and the true interface waves (the file the analysis reads)
     specimen.csv     specimen histories, the source wave and (SHTB) the loading end
@@ -461,20 +462,8 @@ class TrapezoidPulse:
         return {"type": "trapezoid", **asdict(self)}
 
 
-PULSE_PRESETS = {
-    # pulse-shaped test: smooth 30 us ramps
-    "trapezoid": dict(rise=30e-6, plateau=150e-6, fall=30e-6),
-    # sharp-rise variant exciting significant dispersion (content up to a few 100 kHz)
-    "sharp": dict(rise=4e-6, plateau=150e-6, fall=10e-6),
-}
-
-
 def make_pulse(cfg: dict) -> TrapezoidPulse:
-    cfg = dict(cfg)
-    preset = cfg.pop("preset", None)
-    params = dict(PULSE_PRESETS.get(preset, {}))
-    params.update(cfg)
-    return TrapezoidPulse(**params)
+    return TrapezoidPulse(**cfg)
 
 
 # ============================================================================================================
@@ -749,22 +738,14 @@ class FDSpecimen:
 
 
 def make_specimen(cfg: dict):
-    cfg = dict(cfg)
-    mcfg = dict(cfg.pop("material", {}))
-    if "Et" in mcfg:     # tangent modulus (slope of stress vs total strain) -> plastic modulus H
-        if "H" in mcfg:
-            raise ValueError("give either H or Et for the specimen material, not both")
-        Et = mcfg.pop("Et")
-        mcfg["H"] = mcfg["E"] * Et / (mcfg["E"] - Et)
-    mat = SpecimenMaterial(**mcfg)
-    kind = cfg.pop("kind", "lumped")
+    mat = SpecimenMaterial(**cfg["material"])
+    kind = cfg["kind"]
     if kind == "lumped":
         return LumpedSpecimen(cfg["length"], cfg["diameter"], mat)
     if kind == "fd":
         return FDSpecimen(cfg["length"], cfg["diameter"], mat,
-                          n_cells=cfg.get("n_cells", 40), cfl=cfg.get("cfl", 0.5),
-                          viscosity=cfg.get("viscosity", 0.3), rate_filter_time=cfg.get("rate_filter_time", 0.5e-6),
-                          contact_tolerance=cfg.get("contact_tolerance", 1e-6))
+                          n_cells=cfg["n_cells"], cfl=cfg["cfl"], viscosity=cfg["viscosity"],
+                          rate_filter_time=cfg["rate_filter_time"], contact_tolerance=cfg["contact_tolerance"])
     raise ValueError(kind)
 
 
@@ -827,20 +808,220 @@ def check_renamed_keys(cfg: dict) -> None:
         raise ValueError("the case file uses renamed keys: " + ", ".join(old))
 
 
+# ------------------------------------------------------------------ registry of the case-file keys
+# Every key of a simulation case is required, and no other key is accepted. The tables of one setup and the
+# options of the finite-difference specimen are required where they are used and refused elsewhere. Each key
+# has a comment, which the simulator prints next to the value on start.
+
+NUMBER, INTEGER, TEXT, FLAG, POSITIONS = "number", "integer", "text", "true/false", "list of numbers"
+
+
+@dataclass(frozen=True)
+class Key:
+    kind: object        # NUMBER, INTEGER, TEXT, FLAG, POSITIONS, or a tuple of the allowed values
+    comment: str
+
+
+class Table(dict):
+    """The keys of one table of the case file (Key or Table values), with a comment on the table."""
+
+    def __init__(self, comment: str, keys: dict):
+        super().__init__(keys)
+        self.comment = comment
+
+
+def _material(which: str) -> Table:
+    return Table(f"material and cross-section of the {which}", {
+        "E": Key(NUMBER, "Young's modulus [Pa]"),
+        "rho": Key(NUMBER, "density [kg/m^3]"),
+        "nu": Key(NUMBER, "Poisson's ratio [-]; enters the dispersion of models B and C"),
+        "radius": Key(NUMBER, "outer radius [m]"),
+        "inner_radius": Key(NUMBER, "inner radius [m]; 0 for a solid bar, > 0 for a tube"),
+        "tau": Key(NUMBER, "Kelvin-Voigt retardation time [s]; 0: elastic (model C: elastic only)"),
+    })
+
+
+SIMULATION_KEYS = Table("", {
+    "name": Key(TEXT, "name of the case and of its results folder results/<name>/"),
+    "setup": Key(("shpb", "direct_impact", "shtb"),
+                 "shpb: prescribed pulse; direct_impact: input bar is the projectile; shtb: tension bar"),
+    "bar_model": Key(("A", "B", "C"), "wave model of the bars: A 1D wave equation, B Love rod, "
+                                      "C Pochhammer-Chree"),
+    "bars": Table("the input bar and the output bar", {
+        "length_input": Key(NUMBER, "length of the input bar [m] (shtb: flange to specimen)"),
+        "length_output": Key(NUMBER, "length of the output bar [m]"),
+        "far_end_reflections": Key(FLAG, "true: free far ends reflect the waves with flipped sign; "
+                                         "false: absorbing (shtb: output bar only)"),
+        "material_input": _material("input bar"),
+        "material_output": _material("output bar"),
+    }),
+    "gauges": Table("strain gauges", {
+        "input": Key(POSITIONS, "positions on the input bar [m from the specimen face], in the order I1, I2, ..."),
+        "output": Key(POSITIONS, "positions on the output bar [m from the specimen face], in the order O1, O2, ..."),
+        "gauge_length": Key(NUMBER, "active length of each gauge [m]"),
+        "averaging": Key(FLAG, "true: records are averaged over the gauge length; false: strain at the centre"),
+    }),
+    "specimen": Table("specimen between the bars", {
+        "kind": Key(("lumped", "fd"), "lumped: uniform stress, no inertia; fd: finite differences with "
+                                      "wave propagation"),
+        "length": Key(NUMBER, "specimen length [m]"),
+        "diameter": Key(NUMBER, "specimen diameter [m]"),
+        "material": Table("elastic-plastic law with linear hardening, engineering stress and strain", {
+            "E": Key(NUMBER, "Young's modulus [Pa]"),
+            "rho": Key(NUMBER, "density [kg/m^3]; used only by kind = \"fd\""),
+            "sigma0": Key(NUMBER, "initial yield stress [Pa]"),
+            "H": Key(NUMBER, "hardening modulus, slope of stress against plastic strain [Pa]"),
+            "C": Key(NUMBER, "rate sensitivity: yield stress times 1 + C ln(edot/edot0) [-]"),
+            "edot0": Key(NUMBER, "reference strain rate of the rate sensitivity [1/s]"),
+            "rate_dependent": Key(FLAG, "true: yield stress depends on the strain rate; false: C and edot0 "
+                                        "are not used"),
+            "tension_cutoff": Key(FLAG, "true: a face separates instead of carrying tension; false: bonded "
+                                        "(shtb)"),
+        }),
+    }),
+    "sampling": Table("time axis of the records and of the solver", {
+        "rate": Key(NUMBER, "sampling rate of the records [Hz]"),
+        "duration": Key(NUMBER, "length of the records [s]"),
+        "truth_margin": Key(NUMBER, "time simulated beyond the end of the records, then cut off [s]"),
+        "n_sub": Key(INTEGER, "substeps per sample of the specimen (shtb: also of the loading end)"),
+        "pad_factor": Key(NUMBER, "FFT length as a multiple of the record length (against wrap-around)"),
+    }),
+    "coupling": Table("fixed-point iteration between the bars, the specimen and the loading end", {
+        "max_iter": Key(INTEGER, "maximum number of passes"),
+        "tol": Key(NUMBER, "the iteration stops when the outgoing waves change by less than this (relative)"),
+    }),
+})
+
+SETUP_KEYS = {
+    "shpb": {
+        "source": Table("where the incident pulse is prescribed", {
+            "distance_from_interface": Key(NUMBER, "distance of the source from the specimen face [m]"),
+        }),
+        "pulse": Table("incident strain pulse at the source: a trapezoid with smooth ramps", {
+            "amplitude": Key(NUMBER, "plateau strain [-]; negative = compression"),
+            "t_start": Key(NUMBER, "start of the pulse at the source [s]"),
+            "rise": Key(NUMBER, "duration of the rising ramp, 0 to 100 % [s]"),
+            "plateau": Key(NUMBER, "duration of the plateau [s]"),
+            "fall": Key(NUMBER, "duration of the falling ramp, 100 to 0 % [s]"),
+            "ramp": Key(("linear", "cosine", "smoothstep7"),
+                        "shape of the ramps: linear (C0), cosine (C1), smoothstep7 (C3)"),
+        }),
+    },
+    "direct_impact": {
+        "impact": Table("the input bar is the projectile", {
+            "velocity": Key(NUMBER, "initial velocity of the input bar towards the specimen [m/s]"),
+            "time": Key(NUMBER, "time of the first contact with the specimen [s]"),
+        }),
+    },
+    "shtb": {
+        "striker": Table("tube that slides over the input bar and hits the flange", {
+            "length": Key(NUMBER, "striker length [m]; the pulse lasts about 2 length / c0 of the striker"),
+            "velocity": Key(NUMBER, "initial velocity [m/s]; negative = towards the flange"),
+            "impact_time": Key(NUMBER, "time of the first contact with the flange [s]"),
+            "bar_model": Key(("A", "B", "C"), "wave model of the striker (A, B or C, as for the bars)"),
+            "material": _material("striker"),
+        }),
+        "flange": Table("rigid mass on the far end of the input bar; mass = rho pi diameter^2/4 length", {
+            "diameter": Key(NUMBER, "flange diameter [m]"),
+            "length": Key(NUMBER, "flange length [m]"),
+            "rho": Key(NUMBER, "density [kg/m^3]"),
+        }),
+    },
+}
+
+FD_KEYS = {
+    "n_cells": Key(INTEGER, "number of cells along the specimen"),
+    "cfl": Key(NUMBER, "time step as a fraction of the CFL limit [-]"),
+    "viscosity": Key(NUMBER, "linear artificial viscosity, for stability [-]"),
+    "rate_filter_time": Key(NUMBER, "time constant of the strain-rate filter, for stability [s]"),
+    "contact_tolerance": Key(NUMBER, "a closed face opens when its tension exceeds this times E A of the bar [-]"),
+}
+
+# keys that are valid only under a condition, and keys of earlier versions, with the message for each
+CONDITIONAL_KEYS = {**{t: f'setup = "{s}"' for s, tables in SETUP_KEYS.items() for t in tables},
+                    **{f"specimen.{k}": 'specimen.kind = "fd"' for k in FD_KEYS}}
+REMOVED_KEYS = {
+    "pulse.preset": "give rise, plateau and fall",
+    "specimen.material.Et": "give the plastic modulus H = E Et / (E - Et) instead",
+    "flange.mass": "the mass follows from diameter, length and rho",
+}
+
+
+def simulation_keys(cfg: dict) -> Table:
+    """The registry of the keys that this case must have: the common keys, those of its setup, and the options
+    of the finite-difference specimen if it uses one."""
+    spec = Table(SIMULATION_KEYS.comment, SIMULATION_KEYS)
+    spec.update(SETUP_KEYS.get(cfg.get("setup"), {}))
+    if isinstance(cfg.get("specimen"), dict) and cfg["specimen"].get("kind") == "fd":
+        spc = SIMULATION_KEYS["specimen"]
+        spec["specimen"] = Table(spc.comment, {**{k: v for k, v in spc.items() if k != "material"}, **FD_KEYS,
+                                               "material": spc["material"]})
+    return spec
+
+
+def _is_number(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _type_ok(v, kind) -> bool:
+    if isinstance(kind, tuple):
+        return v in kind
+    return {NUMBER: _is_number, INTEGER: lambda x: isinstance(x, int) and not isinstance(x, bool),
+            TEXT: lambda x: isinstance(x, str), FLAG: lambda x: isinstance(x, bool),
+            POSITIONS: lambda x: isinstance(x, list) and len(x) > 0 and all(_is_number(y) for y in x)}[kind](v)
+
+
+def _kind_text(kind) -> str:
+    return " or ".join(f'"{k}"' for k in kind) if isinstance(kind, tuple) else kind
+
+
+def check_simulation_config(cfg: dict) -> None:
+    """Raise ValueError naming every missing, unknown or wrongly typed key of a simulation case."""
+    check_renamed_keys(cfg)
+    errors = []
+
+    def walk(d, spec, path):
+        for k, kind in spec.items():
+            key = path + k
+            if k not in d:
+                errors.append(f"missing: {key} ({'table' if isinstance(kind, Table) else _kind_text(kind.kind)})")
+            elif isinstance(kind, Table):
+                if isinstance(d[k], dict):
+                    walk(d[k], kind, key + ".")
+                else:
+                    errors.append(f"{key} must be a table")
+            elif not _type_ok(d[k], kind.kind):
+                errors.append(f"{key} = {d[k]!r}: expected {_kind_text(kind.kind)}")
+        for k in d:
+            key = path + k
+            if k in spec:
+                continue
+            if key in CONDITIONAL_KEYS:
+                errors.append(f"{key} is used only with {CONDITIONAL_KEYS[key]}")
+            elif key in REMOVED_KEYS:
+                errors.append(f"{key} is no longer a setting: {REMOVED_KEYS[key]}")
+            else:
+                errors.append(f"unknown key: {key}")
+
+    walk(cfg, simulation_keys(cfg), "")
+    if errors:
+        raise ValueError("the simulation case is incomplete or wrong:\n    " + "\n    ".join(errors))
+
+
 class SHPBSimulation:
     """Holds the converged interface waves; evaluates the wave field anywhere on the bars."""
 
     def __init__(self, cfg: dict):
-        check_renamed_keys(cfg)
+        check_simulation_config(cfg)
         self.cfg = cfg
         bc = cfg["bars"]
         self.mat1 = BarMaterial(**bc["material_input"])
-        self.mat2 = BarMaterial(**bc.get("material_output", bc["material_input"]))
+        self.mat2 = BarMaterial(**bc["material_output"])
         self.model1 = make_bar_model(cfg["bar_model"], self.mat1)
         self.model2 = make_bar_model(cfg["bar_model"], self.mat2)
         self.L1 = float(bc["length_input"])
         self.L2 = float(bc["length_output"])
-        self.R = -1.0 if bc.get("far_end_reflections", True) else 0.0
+        self.R = -1.0 if bc["far_end_reflections"] else 0.0
         s = cfg["sampling"]
         self.fs = float(s["rate"])
         self.dt = 1.0 / self.fs
@@ -848,21 +1029,21 @@ class SHPBSimulation:
         # the velocity and A*sigma_eff operators are non-local in time (frequency domain), so on a
         # record that ends while waves are still present they ring in the last samples.
         self.n_out = int(round(s["duration"] * self.fs))
-        self.n_margin = int(round(s.get("truth_margin", 0.0) * self.fs))
+        self.n_margin = int(round(s["truth_margin"] * self.fs))
         self.n = self.n_out + self.n_margin
         self.t = np.arange(self.n) * self.dt
-        pad = s.get("pad_factor", 4)
+        pad = s["pad_factor"]
         self.sp = Spectral(self.n, self.dt, pad)
         self.sp.mask_distance = 2 * max(self.L1, self.L2)      # longest propagation path
         # same FFT length and excluded band, on the stored (cropped) grid: for re-propagating stored data
         self.sp_out = Spectral(self.n_out, self.dt, pad * self.n / self.n_out)
         self.sp_out.max_group_delay = self.sp.max_group_delay
         self.sp_out.mask_distance = self.sp.mask_distance
-        self.setup = cfg.get("setup", "shpb")
+        self.setup = cfg["setup"]
         if self.setup == "direct_impact":
             imp = cfg["impact"]
             self.v0 = float(imp["velocity"])
-            self.t_impact = float(imp.get("time", 20e-6))
+            self.t_impact = float(imp["time"])
             self.pulse = None
             self.d_ref = self.L1
         elif self.setup == "shtb":     # loading end solved in TensionSimulation; incident wave stored after solve()
@@ -876,7 +1057,7 @@ class SHPBSimulation:
         else:
             raise ValueError(f"unknown setup {self.setup!r}")
         self.specimen = make_specimen(cfg["specimen"])
-        n_sub = int(s.get("n_sub", 10))
+        n_sub = s["n_sub"]
         n_sub = max(n_sub, int(np.ceil(self.dt / self.specimen.max_dt()))) if np.isfinite(self.specimen.max_dt()) else n_sub
         self.n_sub = n_sub
         self.eps_ref = self.pulse(self.t) if self.pulse else np.zeros(self.n)
@@ -892,8 +1073,7 @@ class SHPBSimulation:
     # ------------------------------------------------------------------ solve
     def solve(self):
         sp, m1, m2 = self.sp, self.model1, self.model2
-        cp = self.cfg.get("coupling", {})
-        max_iter, tol = int(cp.get("max_iter", 80)), float(cp.get("tol", 1e-8))
+        max_iter, tol = self.cfg["coupling"]["max_iter"], float(self.cfg["coupling"]["tol"])
         a1_inc = propagate(sp, m1, self.eps_ref, self.d_ref)
         b1 = np.zeros(self.n); b2 = np.zeros(self.n)
         hist = []
@@ -979,7 +1159,7 @@ class SHPBSimulation:
         chans = [(1, d) for d in g["input"]] + [(2, d) for d in g["output"]]
         names = [f"I{i+1}" for i in range(len(g["input"]))] + [f"O{i+1}" for i in range(len(g["output"]))]
         point = np.array([self.strain_at(b, d) for b, d in chans])
-        avg = np.array([self.strain_at(b, d, Lg) for b, d in chans]) if g.get("averaging", True) else point.copy()
+        avg = np.array([self.strain_at(b, d, Lg) for b, d in chans]) if g["averaging"] else point.copy()
         return names, chans, point, avg
 
     def metadata(self):
@@ -1002,7 +1182,8 @@ class SHPBSimulation:
 
 def generate(cfg: dict) -> dict:
     """Run one case; returns (case dict for the write_* functions, solved simulation)."""
-    if cfg.get("setup", "shpb") == "shtb":
+    check_simulation_config(cfg)
+    if cfg["setup"] == "shtb":
         sim = TensionSimulation(cfg).solve()
     else:
         sim = SHPBSimulation(cfg).solve()
@@ -1019,7 +1200,7 @@ def generate(cfg: dict) -> dict:
     case = {
         "format_version": FORMAT_VERSION,
         "kind": "synthetic",
-        "name": cfg.get("name", "case"),
+        "name": cfg["name"],
         "time": sim.t[:n],
         "sampling_rate": sim.fs,
         "channels": {
@@ -1155,17 +1336,16 @@ class TensionSimulation(SHPBSimulation):
                              "(the specimen is bonded to the bars and carries tension)")
         st = cfg["striker"]
         self.mat_s = BarMaterial(**st["material"])
-        self.model_s = make_bar_model(st.get("bar_model", cfg["bar_model"]), self.mat_s)
+        self.model_s = make_bar_model(st["bar_model"], self.mat_s)
         self.L_striker = float(st["length"])
         self.v0_striker = float(st["velocity"])
-        self.t_impact = float(st.get("impact_time", 20e-6))
+        self.t_impact = float(st["impact_time"])
         fl = cfg["flange"]
-        self.flange_mass = float(fl.get("mass", fl["rho"] * np.pi * fl["diameter"] ** 2 / 4 * fl["length"]))
+        self.flange_mass = float(fl["rho"] * np.pi * fl["diameter"] ** 2 / 4 * fl["length"])
 
     def solve(self):
         sp, m1, m2, ms = self.sp, self.model1, self.model2, self.model_s
-        cp = self.cfg.get("coupling", {})
-        max_iter, tol = int(cp.get("max_iter", 80)), float(cp.get("tol", 1e-8))
+        max_iter, tol = self.cfg["coupling"]["max_iter"], float(self.cfg["coupling"]["tol"])
         n, ns = self.n, self.n_sub
         dtf = self.dt / ns
         f = np.zeros(n); q = np.zeros(n); b1 = np.zeros(n); b2 = np.zeros(n)
@@ -1404,11 +1584,8 @@ def write_settings_toml(cfg: dict, derived: dict, path) -> None:
 
 
 def load_config(path) -> dict:
-    """Read one case file. ``name`` defaults to the file name without .toml."""
-    path = Path(path)
-    cfg = tomllib.loads(path.read_text())
-    cfg.setdefault("name", path.stem)
-    return cfg
+    """Read one case file (not checked here; see check_simulation_config)."""
+    return tomllib.loads(Path(path).read_text())
 
 
 # ============================================================================================================
@@ -1451,7 +1628,7 @@ def plot_waves(case: dict, path):
     t = case["time"] * US
     ch, itf, sp = case["channels"], case["interface"], case["specimen"]
     cfg = case["config"]
-    setup = cfg.get("setup", "shpb")
+    setup = cfg["setup"]
     impact = setup == "direct_impact"
     fig, ax = plt.subplots(2, 2, figsize=(14, 8), sharex=True, sharey="row" if not impact else False)
     for col, bar, title in ((0, 1, "input bar"), (1, 2, "output bar")):
@@ -1482,7 +1659,7 @@ def plot_waves(case: dict, path):
     elif impact:
         loading = f"direct impact at {cfg['impact']['velocity']:g} m/s"
     else:
-        loading = f"pulse {cfg['pulse']['preset']}"
+        loading = f"pulse with {cfg['pulse']['rise'] * US:g} µs rise"
     note = "; grey: specimen face separated from the bar" if any(
         np.any(sp.get(f"contact_open_face{b}", 0) > 0) for b in (1, 2)) else ""
     fig.suptitle(f"{cfg['name']}: model {cfg['bar_model']}, {loading}, {spc}; tension positive{note}")
@@ -1495,12 +1672,57 @@ def plot_waves(case: dict, path):
 # Command line
 # ============================================================================================================
 
+def _setting_text(v) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, float):
+        if v != 0 and not 1e-3 <= abs(v) < 1e5:        # shortest exact form, with an exponent
+            return np.format_float_scientific(v, unique=True, trim="-")
+        return f"{v:.15g}"
+    if isinstance(v, list):
+        return "[" + ", ".join(_setting_text(x) for x in v) + "]"
+    return str(v)
+
+
+def _setting_lines(d: dict, spec: Table, path: str = "") -> list[tuple]:
+    """("table", path, comment) and ("key", key, value, comment) in the order of the case file: the plain keys of
+    a table before its sub-tables."""
+    rows = [("key", k, v, spec[k].comment) for k, v in d.items() if not isinstance(v, dict)]
+    for k, v in d.items():
+        if isinstance(v, dict):
+            rows += [("table", path + k, spec[k].comment), *_setting_lines(v, spec[k], f"{path}{k}.")]
+    return rows
+
+
+def print_settings(cfg: dict, path, stream=None) -> None:
+    """Print the settings of a checked case, one line per key with its value and the comment of the registry,
+    and a heading with a comment for each table."""
+    stream = stream or sys.stdout
+    rows = _setting_lines(cfg, simulation_keys(cfg))
+    keys = [r for r in rows if r[0] == "key"]
+    wk = max(len(r[1]) for r in keys)
+    wv = min(max(len(_setting_text(r[2])) for r in keys), 14)     # a longer value pushes its comment out
+    print(f"Simulation case {cfg['name']} ({path}), settings:", file=stream)
+    for r in rows:
+        if r[0] == "table":
+            print(f"\n  [{r[1]}]  {r[2]}", file=stream)
+        else:
+            print(f"    {r[1].ljust(wk)}  {_setting_text(r[2]).ljust(wv)}  {r[3]}", file=stream)
+    print("", file=stream)
+
+
 def run(cfg_path: Path, out_root: Path, show: bool):
     """Simulate one case into <out_root>/<name>/; returns the open figure (or None)."""
     import matplotlib.pyplot as plt
     cfg = load_config(cfg_path)
+    try:
+        check_simulation_config(cfg)
+    except ValueError as e:
+        sys.exit(f"{cfg_path}: {e}")
+    print_settings(cfg, cfg_path)
     out = out_root / cfg["name"]
     out.mkdir(parents=True, exist_ok=True)
+    print("Performing simulation, standby ...", flush=True)
     t0 = time.time()
     case, _ = generate(cfg)
     write_settings_toml(cfg, case["derived"], out / "simulation.toml")

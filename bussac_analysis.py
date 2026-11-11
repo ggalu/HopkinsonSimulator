@@ -244,9 +244,7 @@ def separate_case(case: dict, bar_models: dict, eta: float = 1000.0, f_max: floa
 # simulation settings (simulation.toml) are read only to print the differences.
 
 NUMBER, TEXT, FLAG, POSITIONS = "number", "text", "true/false", "list of numbers"
-MATERIAL_KEYS = {"E": NUMBER, "rho": NUMBER, "nu": NUMBER, "radius": NUMBER}
-OPTIONAL_KEYS = {f"bars.{t}.{k}": NUMBER for t in ("material_input", "material_output")
-                 for k in ("inner_radius", "tau")}
+MATERIAL_KEYS = {"E": NUMBER, "rho": NUMBER, "nu": NUMBER, "radius": NUMBER, "inner_radius": NUMBER, "tau": NUMBER}
 ANALYSIS_KEYS = {
     "name": TEXT, "records": TEXT, "settings": TEXT,
     "channels": ("averaged", "point"),
@@ -295,15 +293,9 @@ def check_analysis_config(acfg: dict) -> None:
                     errors.append(f"{key} must be a table")
             elif not _type_ok(d[k], kind):
                 errors.append(f"{key} = {d[k]!r}: expected {_kind_text(kind)}")
-        for k, v in d.items():
-            key = path + k
-            if k in spec:
-                continue
-            if key in OPTIONAL_KEYS:
-                if not _type_ok(v, OPTIONAL_KEYS[key]):
-                    errors.append(f"{key} = {v!r}: expected {OPTIONAL_KEYS[key]}")
-            else:
-                errors.append(f"unknown key: {key}")
+        for k in d:
+            if k not in spec:
+                errors.append(f"unknown key: {path + k}")
 
     walk(acfg, ANALYSIS_KEYS, "")
     if errors:
@@ -339,11 +331,12 @@ def compare_settings(acfg: dict, sim_cfg: dict) -> list[dict]:
         row("impact.velocity", acfg["impact"]["velocity"], sim_cfg.get("impact", {}).get("velocity"))
     row("bars.bar_model", acfg["bars"]["bar_model"], sim_cfg.get("bar_model"))
     for table in ("material_input", "material_output"):
-        sim_mat = sim_bars.get(table, sim_bars.get("material_input", {}))   # material_output defaults to input
+        # settings files of earlier versions: material_output defaulted to the input bar, inner_radius and tau to 0
+        sim_mat = sim_bars.get(table, sim_bars.get("material_input", {}))
         mat = acfg["bars"][table]
-        for k in (*MATERIAL_KEYS, "inner_radius", "tau"):
-            optional = k in ("inner_radius", "tau")         # default 0: solid, elastic bar
-            row(f"bars.{table}.{k}", mat.get(k, 0.0), sim_mat.get(k, 0.0 if optional else None))
+        for k in MATERIAL_KEYS:
+            optional = k in ("inner_radius", "tau")
+            row(f"bars.{table}.{k}", mat[k], sim_mat.get(k, 0.0 if optional else None))
     for k in ("input", "output", "gauge_length"):
         row(f"gauges.{k}", acfg["gauges"][k], sim_g.get(k))
     for k, v in acfg["separation"].items():

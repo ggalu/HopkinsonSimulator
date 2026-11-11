@@ -1,6 +1,6 @@
 """Tests of the output files and of the analysis case: the settings TOML and the records CSV survive a write
 and read, the analysis refuses an incomplete case and names the keys, and the comparison with the simulation
-settings marks exactly the settings that differ."""
+settings marks exactly the settings that differ, and the simulator prints every setting of a case."""
 import io
 import json
 import tomllib
@@ -10,8 +10,9 @@ import numpy as np
 import pytest
 
 from bussac_analysis import check_analysis_config, compare_settings, print_comparison
-from hopkinson_simulator import (INTERFACE_KEYS, deep_merge, dump_toml, generate, load_config, read_records_csv,
-                                 write_records_csv, write_settings_toml, write_specimen_csv)
+from hopkinson_simulator import (INTERFACE_KEYS, deep_merge, dump_toml, generate, load_config, print_settings,
+                                 check_simulation_config, simulation_keys,
+                                 read_records_csv, write_records_csv, write_settings_toml, write_specimen_csv)
 from test_bussac import full_acfg
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,7 +79,10 @@ def test_analysis_case_complete_and_checked():
         check_analysis_config(no_impact)
     with pytest.raises(ValueError, match="f_max"):
         check_analysis_config(deep_merge(acfg, {"separation": {"f_max": "none"}}))
-    check_analysis_config(deep_merge(acfg, {"bars": {"material_input": {"inner_radius": 0.0}}}))   # optional key
+    no_tau = deep_merge(acfg, {})
+    del no_tau["bars"]["material_input"]["tau"]
+    with pytest.raises(ValueError, match="missing: bars.material_input.tau"):
+        check_analysis_config(no_tau)
 
 
 def test_comparison_marks_differences():
@@ -96,3 +100,60 @@ def test_comparison_marks_differences():
     text = out.getvalue()
     assert sum(ln.rstrip().endswith("≠ DIFFERS") for ln in text.splitlines()) == 3
     assert "3 settings differ" in text and "How to read the table" in text and "\033[" not in text
+
+
+ALL_CASES = sorted(p.stem for p in (ROOT / "simulation_cases").glob("*.toml"))
+
+
+@pytest.mark.parametrize("name", ALL_CASES)
+def test_example_cases_are_complete(name):
+    check_simulation_config(load_config(ROOT / "simulation_cases" / f"{name}.toml"))
+
+
+def test_simulation_case_complete_and_checked():
+    """A missing, unknown, wrongly typed, misplaced or removed key is refused, and all of them are named at once."""
+    bad = deep_merge(CASES["SHPB"], {"sampling": {"n_subs": 3, "n_sub": 2.5}, "colour": "red",
+                                     "impact": {"velocity": 5.0}, "pulse": {"preset": "sharp"},
+                                     "specimen": {"n_cells": 40, "material": {"Et": 1e9}}})
+    del bad["bars"]["material_output"]["tau"]
+    with pytest.raises(ValueError) as e:
+        check_simulation_config(bad)
+    msg = str(e.value)
+    for text in ("missing: bars.material_output.tau (number)", "unknown key: sampling.n_subs",
+                 "sampling.n_sub = 2.5: expected integer", "unknown key: colour",
+                 'impact is used only with setup = "direct_impact"',
+                 'specimen.n_cells is used only with specimen.kind = "fd"',
+                 "pulse.preset is no longer a setting", "specimen.material.Et is no longer a setting"):
+        assert text in msg, (text, msg)
+    with pytest.raises(ValueError, match="unknown key: sampling.n_subs"):
+        generate(bad)                                    # the simulation itself checks the case
+
+
+def test_fd_specimen_needs_its_options():
+    fd = deep_merge(CASES["SHPB"], {"specimen": {"kind": "fd"}})
+    with pytest.raises(ValueError, match="missing: specimen.n_cells"):
+        check_simulation_config(fd)
+    check_simulation_config(deep_merge(fd, {"specimen": {"n_cells": 40, "cfl": 0.5, "viscosity": 0.3,
+                                                         "rate_filter_time": 0.5e-6, "contact_tolerance": 1e-6}}))
+
+
+@pytest.mark.parametrize("name", ALL_CASES)
+def test_print_settings_lists_every_key_with_its_comment(name):
+    cfg = load_config(ROOT / "simulation_cases" / f"{name}.toml")
+    buf = io.StringIO()
+    print_settings(cfg, f"{name}.toml", buf)
+    out = buf.getvalue().splitlines()
+    spec = simulation_keys(cfg)
+
+    def leaves(d, sp, prefix=""):
+        for k, v in d.items():
+            if isinstance(v, dict):
+                assert f"  [{prefix}{k}]  {sp[k].comment}" in out
+                yield from leaves(v, sp[k], f"{prefix}{k}.")
+            else:
+                yield k, sp[k].comment
+    printed = [ln for ln in out if ln.startswith("    ")]
+    want = list(leaves(cfg, spec))
+    assert len(printed) == len(want)
+    for ln, (k, comment) in zip(printed, want):
+        assert ln.split()[0] == k and ln.endswith("  " + comment), (ln, k, comment)

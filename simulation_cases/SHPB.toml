@@ -5,9 +5,10 @@
 #   python hopkinson_simulator.py simulation_cases/SHPB.toml
 # Then the Bussac analysis: python bussac_analysis.py analysis_cases/SHPB.toml
 # SI units throughout (m, s, Pa, kg/m^3, Hz). Strain is dimensionless, tension positive.
+# Every key below is required and no other key is accepted; the program lists all wrong keys at once.
 # Distances along a bar are measured from the bar-specimen interface into the bar.
 
-name = "SHPB"                    # results folder name (default: file name without .toml)
+name = "SHPB"                    # results folder name
 setup = "shpb"                   # "shpb", "direct_impact" or "shtb"
 bar_model = "B"                  # A: 1D wave equation, B: Love rod, C: Pochhammer-Chree (1st mode)
 
@@ -17,13 +18,21 @@ length_input = 2.0               # input bar length [m]
 length_output = 2.0              # output bar length [m]
 far_end_reflections = true       # true: free far ends (strain changes sign on reflection); false: absorbing
 
-[bars.material_input]            # Al 7075, nominal handbook values; used for both bars
+[bars.material_input]            # Al 7075, nominal handbook values
 E = 71.7e9                       # Young's modulus [Pa]
 rho = 2810.0                     # density [kg/m^3]
 nu = 0.33                        # Poisson's ratio (enters the dispersion of models B and C)
 radius = 8.0e-3                  # bar radius [m] (16 mm diameter)
-# A different output-bar material can be given in a [bars.material_output] table
-# with the same keys; it defaults to [bars.material_input].
+inner_radius = 0.0               # inner radius [m]; 0: solid bar
+tau = 0.0                        # Kelvin-Voigt retardation time [s]; 0: elastic bar
+
+[bars.material_output]           # Al 7075, the same as the input bar
+E = 71.7e9                       # Young's modulus [Pa]
+rho = 2810.0                     # density [kg/m^3]
+nu = 0.33                        # Poisson's ratio (enters the dispersion of models B and C)
+radius = 8.0e-3                  # bar radius [m] (16 mm diameter)
+inner_radius = 0.0               # inner radius [m]; 0: solid bar
+tau = 0.0                        # Kelvin-Voigt retardation time [s]; 0: elastic bar
 
 # ---------------------------------------------------------------- strain gauges
 [gauges]
@@ -37,8 +46,6 @@ averaging = true                 # true: records are averaged over the gauge len
 distance_from_interface = 2.0    # where the prescribed right-going pulse is defined [m] (impact end)
 
 [pulse]                          # trapezoid with smooth ramps
-preset = "sharp"                 # label; "trapezoid" (30/150/30 us) or "sharp" (4/150/10 us).
-                                 # The explicit times below override the preset values.
 amplitude = -1.0e-3              # plateau strain (negative = compression)
 t_start = 20.0e-6                # pulse start at the source position [s]
 rise = 4.0e-6                    # 0-100 % rise time [s]
@@ -51,12 +58,12 @@ ramp = "smoothstep7"             # ramp shape: "linear" (C0), "cosine" (C1), "sm
 kind = "lumped"                  # "lumped": uniform stress (equilibrium), "fd": 1D finite-difference model with wave propagation
 length = 5.0e-3                  # specimen length [m]
 diameter = 0.01                  # specimen diameter [m]
-# Used only by kind = "fd" (defaults shown):
-# n_cells = 40                    # number of cells along the specimen
-# cfl = 0.5                        # time step as fraction of the CFL limit
-# viscosity = 0.3                  # linear artificial viscosity (stability)
-# rate_filter_time = 0.5e-6       # strain-rate filter time constant [s] (stability)
-# contact_tolerance = 1.0e-6      # a closed face opens only if the tension exceeds this * E_bar * A_bar
+# Required with kind = "fd" and refused with kind = "lumped" (typical values shown):
+# n_cells = 40                   # number of cells along the specimen
+# cfl = 0.5                      # time step as fraction of the CFL limit
+# viscosity = 0.3                # linear artificial viscosity (stability)
+# rate_filter_time = 0.5e-6      # strain-rate filter time constant [s] (stability)
+# contact_tolerance = 1.0e-6     # a closed face opens only if the tension exceeds this * E_bar * A_bar
 
 [specimen.material]              # commercially pure Al (1100-O like), engineering values
 E = 69.0e9                       # Young's modulus [Pa]

@@ -5,7 +5,7 @@ description = "Hopkinson bar simulator with exact interface ground truth, and Bu
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
-dependencies = ["numpy", "scipy", "matplotlib"]
+dependencies = ["numpy", "scipy", "matplotlib", "tabulate"]
 
 [project.optional-dependencies]
 test = ["pytest"]

@@ -33,6 +33,8 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import re
+import shutil
 import sys
 import time
 import tomllib
@@ -42,6 +44,7 @@ from pathlib import Path
 
 import numpy as np
 from scipy import interpolate, optimize, special
+from tabulate import SEPARATING_LINE, tabulate
 
 ROOT = Path(__file__).resolve().parent
 
@@ -1694,20 +1697,52 @@ def _setting_lines(d: dict, spec: Table, path: str = "") -> list[tuple]:
     return rows
 
 
+BOLD, BOLD_RED, RESET = "\033[1m", "\033[1;31m", "\033[0m"
+_ANSI = re.compile(r"\033\[[0-9;]*m")
+
+
+def styled(text: str, style: str, on: bool) -> str:
+    """``text`` in the given terminal style if ``on`` (an empty text stays empty)."""
+    return f"{style}{text}{RESET}" if on and text else text
+
+
+def is_terminal(stream) -> bool:
+    return hasattr(stream, "isatty") and stream.isatty()
+
+
+def format_table(header, groups, bold: bool = False, wrap: int | None = None) -> str:
+    """A framed table of text cells, with a line between the groups of rows and bold header cells if ``bold``.
+    The column ``wrap`` is wrapped so that the table fits the width of the terminal (at least 16 characters)."""
+    rows = []
+    for g in groups:
+        if rows and g:
+            rows.append(SEPARATING_LINE)
+        rows += g
+    widths = None
+    if wrap is not None:
+        cells = [r for r in rows if r is not SEPARATING_LINE]
+        other = sum(max(len(header[i]) + 2, *(len(_ANSI.sub("", str(r[i]))) for r in cells))   # tabulate pads
+                    for i in range(len(header)) if i != wrap)                                    # headers by 2
+        widths = [None] * len(header)
+        widths[wrap] = max(shutil.get_terminal_size((120, 24)).columns - other - (3 * len(header) + 1), 16)
+    return tabulate(rows, headers=[styled(h, BOLD, bold) for h in header], tablefmt="rounded_outline",
+                    disable_numparse=True, maxcolwidths=widths)
+
+
 def print_settings(cfg: dict, path, stream=None) -> None:
-    """Print the settings of a checked case, one line per key with its value and the comment of the registry,
-    and a heading with a comment for each table."""
+    """Print the settings of a checked case as a framed table: one row per key with its value and the comment of
+    the registry, and one group per table of the case file, headed by the table name and its comment (bold on
+    a terminal)."""
     stream = stream or sys.stdout
-    rows = _setting_lines(cfg, simulation_keys(cfg))
-    keys = [r for r in rows if r[0] == "key"]
-    wk = max(len(r[1]) for r in keys)
-    wv = min(max(len(_setting_text(r[2])) for r in keys), 14)     # a longer value pushes its comment out
-    print(f"Simulation case {cfg['name']} ({path}), settings:", file=stream)
-    for r in rows:
+    bold = is_terminal(stream)
+    groups = [[]]
+    for r in _setting_lines(cfg, simulation_keys(cfg)):
         if r[0] == "table":
-            print(f"\n  [{r[1]}]  {r[2]}", file=stream)
+            groups.append([[styled(f"[{r[1]}]", BOLD, bold), "", styled(r[2], BOLD, bold)]])
         else:
-            print(f"    {r[1].ljust(wk)}  {_setting_text(r[2]).ljust(wv)}  {r[3]}", file=stream)
+            groups[-1].append([r[1], _setting_text(r[2]), r[3]])
+    print(styled(f"Simulation case {cfg['name']} ({path})", BOLD, bold), file=stream)
+    print(format_table(("setting", "value", "role"), groups, bold, wrap=2), file=stream)
     print("", file=stream)
 
 

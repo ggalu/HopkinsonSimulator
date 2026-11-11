@@ -30,7 +30,7 @@ results/                 output (not in git)
 ```
 
 ## Running
-The programs need Python 3.11 or later with numpy, scipy and matplotlib (pytest for the tests). In the
+The programs need Python 3.11 or later with numpy, scipy, matplotlib and tabulate (pytest for the tests). In the
 Python environment:
 ```bash
 python hopkinson_simulator.py simulation_cases/SHPB.toml          # -> results/SHPB/
@@ -39,8 +39,10 @@ python hopkinson_simulator.py simulation_cases/*.toml --headless  # all cases, f
 python bussac_analysis.py analysis_cases/*.toml --headless
 python -m pytest -q                                               # 52 tests, about 50 s
 ```
-On start, the simulator checks each case file (see "Simulation case file") and prints its settings: one line
-per key with its value and a short comment on its role, under a heading with a comment for each table. It
+On start, the simulator checks each case file (see "Simulation case file") and prints its settings as a framed
+table: one row per key with its value and a short comment on its role, and one group of rows per table of the
+case file, headed by the table name and its comment. The comments wrap to the width of the terminal; on a
+terminal the headings are bold. It
 then prints "Performing simulation, standby ..." and starts the coupling iteration. Without `--headless` the figures are also shown, and the program ends when all windows are closed.
 `--out <dir>` changes the results root.
 
@@ -218,7 +220,8 @@ former names (`length_incident`, `length_transmitted`, `material`, `material_tra
 `transmitted`) is refused with a message that names
 the new keys.
 
-On start, the analysis prints a table of its settings next to the simulation settings. Each row has the status
+On start, the analysis prints a framed table of its settings next to the simulation settings, with a line
+between the groups of keys. Each row has the status
 "same", "≠ DIFFERS" or "analysis only" (for the file paths and the `[separation]` keys, which have no
 counterpart in the simulation). A short explanation of these statuses is printed under the table. Numbers count
 as the same when they agree to a relative 10⁻¹². On a terminal the

@@ -32,8 +32,8 @@ from pathlib import Path
 import numpy as np
 
 from hopkinson_simulator import (COLORS, INVALID, PM, US, BarMaterial, BarModel, LoveRod, WaveEq1D,
-                                 apply_style, gauge_average_factor, make_bar_model, next_pow2,
-                                 read_records_csv, to_json)
+                                 BOLD, BOLD_RED, apply_style, format_table, gauge_average_factor, is_terminal,
+                                 make_bar_model, next_pow2, read_records_csv, styled, to_json)
 
 ROOT = Path(__file__).resolve().parent
 
@@ -370,33 +370,26 @@ STATUS_LEGEND = """
 
 
 def print_comparison(rows: list[dict], title: str, stream=None) -> int:
-    """Print the settings table; differences are marked (and drawn in bold red on a terminal). Returns the
-    number of differences."""
+    """Print the settings as a framed table, with a line between the groups of keys; differences are marked
+    (and drawn in bold red on a terminal, where the header is bold). Returns the number of differences."""
     stream = stream or sys.stdout
-    color = hasattr(stream, "isatty") and stream.isatty()
-    head = ("setting", "analysis", "simulation", "status")
-    cells = [(r["key"], _fmt(r["analysis"]), _fmt(r["simulation"]) if r["status"] != "analysis only" else "",
-              "≠ DIFFERS" if r["status"] == "differs" else r["status"]) for r in rows]
-    w = [max(len(c[i]) for c in [head, *cells]) for i in range(4)]
-    print(title, file=stream)
-    print("  " + "  ".join(h.ljust(w[i]) for i, h in enumerate(head)), file=stream)
-    group = None
-    for r, c in zip(rows, cells):
+    color = is_terminal(stream)
+    groups, group = [], None
+    for r in rows:
         g = r["key"].rsplit(".", 1)[0] if "." in r["key"] else ""
-        if group is not None and g != group:
-            print("", file=stream)
-        group = g
-        line = ("  " + "  ".join(x.ljust(w[i]) for i, x in enumerate(c))).rstrip()
-        if r["status"] == "differs" and color:
-            line = f"\033[1;31m{line}\033[0m"
-        print(line, file=stream)
+        if g != group:
+            groups.append([])
+            group = g
+        cells = [r["key"], _fmt(r["analysis"]), _fmt(r["simulation"]) if r["status"] != "analysis only" else "",
+                 "≠ DIFFERS" if r["status"] == "differs" else r["status"]]
+        groups[-1].append([styled(c, BOLD_RED, color and r["status"] == "differs") for c in cells])
+    print(styled(title, BOLD, color), file=stream)
+    print(format_table(("setting", "analysis", "simulation", "status"), groups, color, wrap=1), file=stream)
     print(STATUS_LEGEND, file=stream)
     n = sum(r["status"] == "differs" for r in rows)
     summary = (f"{n} setting{'s' if n != 1 else ''} differ{'s' if n == 1 else ''} from the simulation; "
                f"the analysis uses its own values" if n else "no differences from the simulation settings")
-    if n and color:
-        summary = f"\033[1;31m{summary}\033[0m"
-    print(summary + "\n", file=stream)
+    print(styled(summary, BOLD_RED, color and n > 0) + "\n", file=stream)
     return n
 
 

@@ -10,9 +10,9 @@ import numpy as np
 import pytest
 
 from bussac_analysis import check_analysis_config, compare_settings, print_comparison
-from hopkinson_simulator import (INTERFACE_KEYS, deep_merge, dump_toml, generate, load_config, print_settings,
-                                 check_simulation_config, simulation_keys,
-                                 read_records_csv, write_records_csv, write_settings_toml, write_specimen_csv)
+from hopkinson_simulator import (INTERFACE_KEYS, _setting_text, check_simulation_config, deep_merge, dump_toml,
+                                 generate, load_config, print_settings, read_records_csv, simulation_keys,
+                                 write_records_csv, write_settings_toml, write_specimen_csv)
 from test_bussac import full_acfg
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -98,7 +98,7 @@ def test_comparison_marks_differences():
     out = io.StringIO()
     assert print_comparison(compare_settings(acfg, sim), "title", out) == 3
     text = out.getvalue()
-    assert sum(ln.rstrip().endswith("≠ DIFFERS") for ln in text.splitlines()) == 3
+    assert sum(row[-1] == "≠ DIFFERS" for row in framed_rows(text)) == 3
     assert "3 settings differ" in text and "How to read the table" in text and "\033[" not in text
 
 
@@ -137,23 +137,35 @@ def test_fd_specimen_needs_its_options():
                                                          "rate_filter_time": 0.5e-6, "contact_tolerance": 1e-6}}))
 
 
+def framed_rows(text: str) -> list[list[str]]:
+    """The cells of the rows of a framed table (without the header row). A row whose wrapped cells continue on
+    the next line, with the first cell empty there, is joined into one row."""
+    rows = []
+    for ln in text.splitlines():
+        if not ln.startswith("│"):
+            continue
+        cells = [c.strip() for c in ln.strip("│").split("│")]
+        if rows and not cells[0]:
+            rows[-1] = [(a + ("" if a.endswith("-") else " ") + b).strip() if b else a
+                        for a, b in zip(rows[-1], cells)]
+        else:
+            rows.append(cells)
+    return rows[1:]
+
+
 @pytest.mark.parametrize("name", ALL_CASES)
-def test_print_settings_lists_every_key_with_its_comment(name):
+def test_print_settings_lists_every_key_with_its_comment(name, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "100")              # the comments are wrapped to this width
     cfg = load_config(ROOT / "simulation_cases" / f"{name}.toml")
     buf = io.StringIO()
     print_settings(cfg, f"{name}.toml", buf)
-    out = buf.getvalue().splitlines()
-    spec = simulation_keys(cfg)
+    text = buf.getvalue()
+    assert "\033[" not in text and max(len(ln) for ln in text.splitlines()) <= 100
 
-    def leaves(d, sp, prefix=""):
+    def expected(d, sp, prefix=""):
+        rows = [[k, _setting_text(v), sp[k].comment] for k, v in d.items() if not isinstance(v, dict)]
         for k, v in d.items():
             if isinstance(v, dict):
-                assert f"  [{prefix}{k}]  {sp[k].comment}" in out
-                yield from leaves(v, sp[k], f"{prefix}{k}.")
-            else:
-                yield k, sp[k].comment
-    printed = [ln for ln in out if ln.startswith("    ")]
-    want = list(leaves(cfg, spec))
-    assert len(printed) == len(want)
-    for ln, (k, comment) in zip(printed, want):
-        assert ln.split()[0] == k and ln.endswith("  " + comment), (ln, k, comment)
+                rows += [[f"[{prefix}{k}]", "", sp[k].comment], *expected(v, sp[k], f"{prefix}{k}.")]
+        return rows
+    assert framed_rows(text) == expected(cfg, simulation_keys(cfg))

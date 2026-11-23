@@ -10,14 +10,15 @@ import numpy as np
 import pytest
 
 from bussac_analysis import check_analysis_config, compare_settings, print_comparison
-from hopkinson_simulator import (INTERFACE_KEYS, _setting_text, check_simulation_config, deep_merge, dump_toml,
-                                 generate, load_config, print_settings, read_records_csv, simulation_keys,
-                                 write_records_csv, write_settings_toml, write_specimen_csv)
+from hopkinson_simulator import (INTERFACE_KEYS, SI_FACTORS, UNITS, Key, Table, _setting_text,
+                                 check_simulation_config, convert_case_from_si, deep_merge, dump_toml, generate,
+                                 load_config, print_settings, read_records_csv, simulation_keys, write_records_csv,
+                                 write_settings_toml, write_specimen_csv)
 from test_bussac import full_acfg
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES = {n: load_config(ROOT / "simulation_cases" / f"{n}.toml") for n in ("SHPB", "direct_impact", "SHTB")}
-SHORT = {"sampling": {"duration": 300e-6}}
+SHORT = {"sampling": {"duration": 0.3}}
 
 
 def test_dump_toml_round_trip():
@@ -57,7 +58,7 @@ def test_output_files_round_trip(name, tmp_path):
 
     write_specimen_csv(case, tmp_path / "sp.csv")
     header = [ln for ln in (tmp_path / "sp.csv").read_text().splitlines() if not ln.startswith("#")][0]
-    assert header.startswith("t[s],stress[Pa],") and header.endswith("source_eps_ref")
+    assert header.startswith("t[ms],stress[GPa],") and header.endswith("source_eps_ref")
 
 
 def test_analysis_case_complete_and_checked():
@@ -91,8 +92,8 @@ def test_comparison_marks_differences():
     rows = compare_settings(acfg, sim)
     assert not [r for r in rows if r["status"] == "differs"]
     assert {r["key"] for r in rows if r["status"] == "analysis only"} >= {"separation.eta", "records"}
-    acfg = deep_merge(acfg, {"impact": {"velocity": 6.0}, "gauges": {"gauge_length": 3e-3},
-                             "bars": {"material_output": {"E": 2.4e9}}})
+    acfg = deep_merge(acfg, {"impact": {"velocity": 6.0}, "gauges": {"gauge_length": 3.0},
+                             "bars": {"material_output": {"E": 2.4}}})
     diff = [r["key"] for r in compare_settings(acfg, sim) if r["status"] == "differs"]
     assert diff == ["impact.velocity", "bars.material_output.E", "gauges.gauge_length"], diff
     out = io.StringIO()
@@ -114,7 +115,7 @@ def test_simulation_case_complete_and_checked():
     """A missing, unknown, wrongly typed, misplaced or removed key is refused, and all of them are named at once."""
     bad = deep_merge(CASES["SHPB"], {"sampling": {"n_subs": 3, "n_sub": 2.5}, "colour": "red",
                                      "impact": {"velocity": 5.0}, "pulse": {"preset": "sharp"},
-                                     "specimen": {"n_cells": 40, "material": {"Et": 1e9}}})
+                                     "specimen": {"n_cells": 40, "material": {"Et": 1.0}}})
     del bad["bars"]["material_output"]["tau"]
     with pytest.raises(ValueError) as e:
         check_simulation_config(bad)
@@ -134,7 +135,7 @@ def test_fd_specimen_needs_its_options():
     with pytest.raises(ValueError, match="missing: specimen.n_cells"):
         check_simulation_config(fd)
     check_simulation_config(deep_merge(fd, {"specimen": {"n_cells": 40, "cfl": 0.5, "viscosity": 0.3,
-                                                         "rate_filter_time": 0.5e-6, "contact_tolerance": 1e-6}}))
+                                                         "rate_filter_time": 0.5e-3, "contact_tolerance": 1e-6}}))
 
 
 def framed_rows(text: str) -> list[list[str]]:
@@ -169,3 +170,74 @@ def test_print_settings_lists_every_key_with_its_comment(name, monkeypatch):
                 rows += [[f"[{prefix}{k}]", "", sp[k].comment], *expected(v, sp[k], f"{prefix}{k}.")]
         return rows
     assert framed_rows(text) == expected(cfg, simulation_keys(cfg))
+
+
+# ------------------------------------------------------------------ units
+def _to_si(cfg: dict) -> dict:
+    """The values of a case in SI units (the inverse of convert_case_from_si), without the key units."""
+    def walk(d, spec):
+        out = {}
+        for k, v in d.items():
+            kind = spec.get(k)
+            if isinstance(v, dict):
+                out[k] = walk(v, kind)
+            elif isinstance(kind, Key) and kind.dim:
+                f = SI_FACTORS[kind.dim]
+                out[k] = [x / f for x in v] if isinstance(v, list) else v / f
+            else:
+                out[k] = v
+        return out
+    return walk({k: v for k, v in cfg.items() if k != "units"}, simulation_keys(cfg))
+
+
+def test_si_case_is_refused_and_converted():
+    """A case file of an earlier version (SI units, no key units) is refused; convert_case_from_si gives back the
+    case in the units of the program."""
+    si = _to_si(CASES["SHTB"])
+    with pytest.raises(ValueError, match="SI units of an earlier version"):
+        check_simulation_config(si)
+    with pytest.raises(ValueError, match="this program uses units"):
+        check_simulation_config({**CASES["SHTB"], "units": "m-s-Pa"})
+    back = convert_case_from_si(si)
+    check_simulation_config(back)
+    assert back["units"] == UNITS and back["bars"]["length_input"] == pytest.approx(2700.0, rel=1e-14)
+    a, b = _numbers(back), _numbers(CASES["SHTB"])
+    assert len(a) == len(b) and np.allclose(a, b, rtol=1e-12, atol=0)
+
+
+def _numbers(d):
+    out = []
+    for k in sorted(d):
+        v = d[k]
+        out += _numbers(v) if isinstance(v, dict) else [x for x in (v if isinstance(v, list) else [v])
+                                                         if isinstance(x, float)]
+    return out
+
+
+def test_old_records_file_is_refused(tmp_path):
+    case, _ = generate(deep_merge(CASES["SHPB"], SHORT))
+    write_records_csv(case, tmp_path / "s.csv")
+    lines = (tmp_path / "s.csv").read_text().splitlines()
+    assert lines[0] == "# hopkinson-csv-2.0"
+    (tmp_path / "old.csv").write_text("\n".join(["# hopkinson-csv-1.0"] + lines[1:]) + "\n")
+    with pytest.raises(ValueError, match="earlier version, in SI units"):
+        read_records_csv(tmp_path / "old.csv")
+
+
+@pytest.mark.parametrize("name", ["SHPB", "SHTB"])
+def test_results_do_not_depend_on_the_unit_system(name):
+    """The equations of the program are homogeneous, so the same case given in SI numbers gives the same results
+    in SI units. This finds a constant that assumes one unit system (an absolute tolerance, for example)."""
+    cfg = deep_merge(CASES[name], {"sampling": {"duration": 0.6}})
+    si = {**_to_si(cfg), "units": UNITS}           # SI numbers, run as they are
+    a, _ = generate(cfg)
+    b, _ = generate(si)
+    assert np.allclose(b["time"] * SI_FACTORS["time"], a["time"], rtol=1e-12, atol=0)
+    ch_a, ch_b = a["channels"]["records"], b["channels"]["records"]
+    assert np.max(np.abs(ch_a - ch_b)) < 1e-9 * np.max(np.abs(ch_a))
+    # each quantity relative to its largest value on either bar (the far-end echo can be zero in the record)
+    for keys, f in ((("wave_in", "wave_out"), 1.0), (("velocity",), 1.0), (("force_E", "force_eff"), 1e-3)):
+        x = np.array([a["interface"][bar][k] for bar in ("bar1", "bar2") for k in keys])
+        y = np.array([b["interface"][bar][k] for bar in ("bar1", "bar2") for k in keys]) * f    # N -> kN
+        assert np.max(np.abs(x - y)) < 1e-9 * np.max(np.abs(x)), keys
+    assert a["derived"]["solve_info"]["iterations"] == b["derived"]["solve_info"]["iterations"]

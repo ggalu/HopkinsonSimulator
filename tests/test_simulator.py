@@ -18,8 +18,8 @@ SHPB = load_config(CASES / "SHPB.toml")
 IMPACT = load_config(CASES / "direct_impact.toml")
 SHTB = load_config(CASES / "SHTB.toml")
 MAT = BarMaterial(**SHPB["bars"]["material_input"])
-ELASTIC = {"sigma0": 1e12, "rate_dependent": False}
-TRAPEZOID = {"rise": 30e-6, "fall": 30e-6}
+ELASTIC = {"sigma0": 1e3, "rate_dependent": False}
+TRAPEZOID = {"rise": 0.03, "fall": 0.03}
 
 
 def variant(cfg, **over):
@@ -28,7 +28,7 @@ def variant(cfg, **over):
 
 # ------------------------------------------------------------------ model A, closed forms
 def test_dalembert_model_a_elastic_specimen():
-    cfg = variant(SHPB, bar_model="A", pulse=TRAPEZOID, sampling={"duration": 700e-6, "n_sub": 8},
+    cfg = variant(SHPB, bar_model="A", pulse=TRAPEZOID, sampling={"duration": 0.7, "n_sub": 8},
                   specimen={"material": {**ELASTIC, "tension_cutoff": False}})
     case, sim = generate(cfg)
     m1, m2, spc, f = sim.mat1, sim.mat2, sim.specimen, sim.pulse
@@ -37,10 +37,10 @@ def test_dalembert_model_a_elastic_specimen():
     ks = spc.mat.E / spc.Ls
     a1 = lambda t: f(t - sim.d_ref / c)
     sol = solve_ivp(lambda t, s: ks * (2 * c * a1(t) - Q * s), (0, sim.t[-1]), [0.0], method="DOP853",
-                    rtol=1e-13, atol=1e-6, max_step=0.2e-6, dense_output=True)
+                    rtol=1e-13, atol=1e-15, max_step=0.2e-3, dense_output=True)
     sig = lambda t: np.where(t > 0, sol.sol(np.maximum(t, 0))[0], 0.0)
     t = case["time"]
-    for i, (bar, d) in enumerate([(1, 0.30), (1, 0.85), (2, 0.30), (2, 0.85)]):
+    for i, (bar, d) in enumerate([(1, 300.0), (1, 850.0), (2, 300.0), (2, 850.0)]):
         if bar == 1:
             ex = f(t - (sim.d_ref - d) / c) + spc.As * sig(t - d / c) / (m1.E * m1.area) - a1(t - d / c)
         else:
@@ -52,14 +52,14 @@ def test_dalembert_model_a_elastic_specimen():
 def test_direct_impact_model_a_elastic_specimen():
     """Moving input bar on an elastic lumped specimen, before any far-end echo: with P = -v0,
     sigma(t) = -(v0/Q) (1 - exp(-(Es/Ls) Q (t - t_i))); each bar carries N/(E A) delayed by d/c."""
-    cfg = variant(IMPACT, bar_model="A", sampling={"duration": 500e-6},
-                  specimen={"material": {"sigma0": 1e12, "tension_cutoff": False}})
+    cfg = variant(IMPACT, bar_model="A", sampling={"duration": 0.5},
+                  specimen={"material": {"sigma0": 1e3, "tension_cutoff": False}})
     case, sim = generate(cfg)
     m1, m2, spc, v0, ti = sim.mat1, sim.mat2, sim.specimen, sim.v0, sim.t_impact
     Q = spc.As * (m1.c0 / (m1.E * m1.area) + m2.c0 / (m2.E * m2.area))
     N = lambda t: -spc.As * v0 / Q * (1 - np.exp(-spc.mat.E / spc.Ls * Q * np.maximum(t - ti, 0.0)))
     t = case["time"]
-    for i, (bar, d) in enumerate([(1, 0.13), (1, 0.53), (2, 0.12), (2, 0.50)]):
+    for i, (bar, d) in enumerate([(1, 130.0), (1, 530.0), (2, 120.0), (2, 500.0)]):
         m = m1 if bar == 1 else m2
         ex = N(t - d / m.c0) / (m.E * m.area)
         err = np.max(np.abs(case["channels"]["records_point"][i] - ex)) / np.max(np.abs(ex))
@@ -72,8 +72,8 @@ def test_shtb_loading_end_model_a():
     """Striker on a rigid flange, before any echo (model A, a specimen of bar size and very high stiffness,
     so that it transmits the wave unchanged): f(t) = -(v_s/c1) Z_s/(Z1 + Z_s) (1 - exp(-(t - t_i)/tau)),
     tau = m/(Z1 + Z_s); the input-bar gauges see f delayed by (L1 - d)/c1, the output-bar gauges by (L1 + d)/c1."""
-    cfg = variant(SHTB, bar_model="A", striker={"bar_model": "A"}, sampling={"duration": 1000e-6},
-                  specimen={"diameter": 0.016, "material": {**ELASTIC, "E": 1e15}})
+    cfg = variant(SHTB, bar_model="A", striker={"bar_model": "A"}, sampling={"duration": 1.0},
+                  specimen={"diameter": 16.0, "material": {**ELASTIC, "E": 1e6}})
     case, sim = generate(cfg)
     m1, ms = sim.mat1, sim.mat_s
     Z1, Zs, c = m1.impedance, ms.impedance, m1.c0
@@ -81,7 +81,7 @@ def test_shtb_loading_end_model_a():
     f = lambda t: -sim.v0_striker / c * Zs / (Z1 + Zs) * (1 - np.exp(-np.maximum(t - sim.t_impact, 0.0) / tau))
     t = case["time"]
     assert t[-1] < sim.t_impact + 2 * sim.L_striker / ms.c0         # before the striker echo
-    for i, (bar, d) in enumerate([(1, 0.3), (1, 0.85), (2, 0.3), (2, 0.85)]):
+    for i, (bar, d) in enumerate([(1, 300.0), (1, 850.0), (2, 300.0), (2, 850.0)]):
         delay = (sim.L1 - d) / c if bar == 1 else (sim.L1 + d) / c
         ex = f(t - delay)
         err = np.max(np.abs(case["channels"]["records_point"][i] - ex)) / np.max(np.abs(ex))
@@ -92,15 +92,15 @@ def test_shtb_elastic_specimen_is_a_spring():
     """An elastic lumped specimen bonded between two equal bars (model A) is a massless spring of compliance
     C = Ls/(Es As). Before any echo it transmits the incident wave with T = 1/(1 + i omega Z C/2)
     (time factor exp(i omega t)), i.e. (Z C/2) db2/dt + b2 = a1."""
-    cfg = variant(SHTB, bar_model="A", striker={"bar_model": "A"}, sampling={"duration": 1400e-6},
+    cfg = variant(SHTB, bar_model="A", striker={"bar_model": "A"}, sampling={"duration": 1.4},
                   specimen={"material": ELASTIC})
     case, sim = generate(cfg)
     spc, m = sim.specimen, sim.mat1
     tau = m.impedance * spc.Ls / (spc.mat.E * spc.As) / 2
-    assert 10e-6 < tau < 30e-6                       # a time constant that the sampling resolves
+    assert 0.01 < tau < 0.03                         # a time constant that the sampling resolves
     t, a1 = case["time"], case["interface"]["bar1"]["wave_in"]
     sol = solve_ivp(lambda s, y: (np.interp(s, t, a1) - y) / tau, (0, t[-1]), [0.0], method="DOP853",
-                    rtol=1e-11, atol=1e-14, max_step=0.1e-6, t_eval=t)
+                    rtol=1e-11, atol=1e-14, max_step=0.1e-3, t_eval=t)
     b2 = case["interface"]["bar2"]["wave_out"]
     a2 = case["interface"]["bar2"]["wave_in"]
     assert np.max(np.abs(a2)) < 1e-5 * np.max(np.abs(a1))     # no echo yet (only spectral round-off)
@@ -109,7 +109,7 @@ def test_shtb_elastic_specimen_is_a_spring():
     assert np.max(np.abs(b2 - a1)) / np.max(np.abs(a1)) > 0.1    # the spring changes the wave noticeably
 
 
-FD_OPTIONS = {"kind": "fd", "n_cells": 40, "cfl": 0.5, "viscosity": 0.3, "rate_filter_time": 0.5e-6,
+FD_OPTIONS = {"kind": "fd", "n_cells": 40, "cfl": 0.5, "viscosity": 0.3, "rate_filter_time": 0.5e-3,
               "contact_tolerance": 1e-6}
 
 
@@ -119,7 +119,7 @@ def test_shtb_brittle_failure(kind):
     failure it follows the elastic specimen; once the stress reaches the failure stress it carries no force,
     so the output bar receives nothing and the input bar reflects the incident wave as from a free end
     (b1 = -a1)."""
-    base = variant(SHTB, bar_model="A", striker={"bar_model": "A"}, sampling={"duration": 1400e-6},
+    base = variant(SHTB, bar_model="A", striker={"bar_model": "A"}, sampling={"duration": 1.4},
                    specimen={"material": ELASTIC, **(FD_OPTIONS if kind == "fd" else {})})
     ref, _ = generate(base)
     sig_ref = ref["specimen"]["stress"]
@@ -132,7 +132,7 @@ def test_shtb_brittle_failure(kind):
     before = slice(0, i_f - 1)
     assert np.max(np.abs(sp["stress"][before] - sig_ref[before])) < 1e-5 * sf    # spectral round-off only
     assert np.max(sp["stress"]) <= sf * (1 + 1e-12)
-    after = t > t[i_f] + (5e-6 if kind == "fd" else 0.0)            # fd: the broken halves still ring briefly
+    after = t > t[i_f] + (5e-3 if kind == "fd" else 0.0)            # fd: the broken halves still ring briefly
     N = np.abs(sp["force_face1"][after]) + np.abs(sp["force_face2"][after])
     tol = 1e-12 if kind == "lumped" else 2e-2
     assert np.max(N) < tol * np.max(sp["force_face1"])
@@ -141,7 +141,7 @@ def test_shtb_brittle_failure(kind):
 
 
 def test_former_key_names_are_refused():
-    old = variant(SHPB, gauges={"incident": [0.3, 0.85]})
+    old = variant(SHPB, gauges={"incident": [300.0, 850.0]})
     with pytest.raises(ValueError, match=r"gauges.incident -> gauges.input"):
         generate(old)
 
@@ -154,7 +154,7 @@ def test_shtb_needs_bonded_specimen():
 # ------------------------------------------------------------------ model B
 def test_love_wavenumber_satisfies_dispersion_relation():
     love = LoveRod(MAT)
-    w = 2 * np.pi * np.linspace(1e3, 0.99 * love.omega_cutoff / (2 * np.pi), 200)
+    w = 2 * np.pi * np.linspace(1.0, 0.99 * love.omega_cutoff / (2 * np.pi), 200)
     k = np.real(love.wavenumber(w))
     c = w / k
     assert np.allclose(c ** 2 / MAT.c0 ** 2, 1 / (1 + MAT.nu ** 2 * k ** 2 * love.rg ** 2), rtol=1e-12)
@@ -166,12 +166,12 @@ def test_love_propagated_field_satisfies_love_pde_second_order():
     love = LoveRod(MAT)
     rho, E, nu, rg = MAT.rho, MAT.E, MAT.nu, love.rg
     res = []
-    for h, dt in ((2e-3, 4e-7), (1e-3, 2e-7)):
-        n = int(round(300e-6 / dt))
+    for h, dt in ((2.0, 4e-4), (1.0, 2e-4)):
+        n = int(round(0.3 / dt))
         sp = Spectral(n, dt, 8)
         t = np.arange(n) * dt
-        g = -1e-3 * np.exp(-0.5 * ((t - 40e-6) / 4e-6) ** 2)
-        X = np.array([propagate(sp, love, g, 0.5 + j * h) for j in (-1, 0, 1)])
+        g = -1e-3 * np.exp(-0.5 * ((t - 0.04) / 0.004) ** 2)
+        X = np.array([propagate(sp, love, g, 500.0 + j * h) for j in (-1, 0, 1)])
         d2t = lambda y: (np.roll(y, -1) - 2 * y + np.roll(y, 1)) / dt ** 2
         e_xx = (X[0] - 2 * X[1] + X[2]) / h ** 2
         R = rho * d2t(X[1]) - E * e_xx - rho * nu ** 2 * rg ** 2 * d2t(e_xx)
@@ -186,27 +186,27 @@ def test_love_propagated_field_satisfies_love_pde_second_order():
 
 def test_love_tone_burst_phase_and_group_velocity():
     love = LoveRod(MAT)
-    dt, n = 1 / 50e6, 60000
-    sp, t = Spectral(n, dt, 4), np.arange(n) * 1 / 50e6
-    fc = 100e3
+    dt, n = 1 / 50e3, 60000
+    sp, t = Spectral(n, dt, 4), np.arange(n) * dt
+    fc = 100.0
     tw = 20 / fc
     x = np.exp(-0.5 * ((t - 1.2 * tw) / (tw / 6)) ** 2) * np.sin(2 * np.pi * fc * (t - 1.2 * tw))
-    ha, hb = hilbert(propagate(sp, love, x, 0.85)), hilbert(propagate(sp, love, x, 0.852))
+    ha, hb = hilbert(propagate(sp, love, x, 850.0)), hilbert(propagate(sp, love, x, 852.0))
     ip = int(np.argmax(np.abs(ha)))
-    c_meas = 2 * np.pi * fc * 2e-3 / np.angle(ha[ip] * np.conj(hb[ip]))
+    c_meas = 2 * np.pi * fc * 2.0 / np.angle(ha[ip] * np.conj(hb[ip]))
     c_th = np.real(love.phase_velocity(np.array([2 * np.pi * fc])))[0]
     assert abs(c_meas / c_th - 1) < 1e-3
-    h1 = np.abs(hilbert(propagate(sp, love, x, 0.3)))
-    cg = 0.55 / ((np.argmax(np.abs(ha)) - np.argmax(h1)) * dt)
+    h1 = np.abs(hilbert(propagate(sp, love, x, 300.0)))
+    cg = 550.0 / ((np.argmax(np.abs(ha)) - np.argmax(h1)) * dt)
     k = 2 * np.pi * fc / c_th
     assert abs(cg / (MAT.c0 / (1 + (MAT.nu * love.rg * k) ** 2) ** 1.5) - 1) < 2e-3
 
 
 def test_force_eff_equals_love_effective_stress():
     love = LoveRod(MAT)
-    sp = Spectral(4000, 2e-7, 8)
-    t = np.arange(4000) * 2e-7
-    eps = propagate(sp, love, -1e-3 * np.exp(-0.5 * ((t - 50e-6) / 3e-6) ** 2), 1.0)
+    sp = Spectral(4000, 2e-4, 8)
+    t = np.arange(4000) * 2e-4
+    eps = propagate(sp, love, -1e-3 * np.exp(-0.5 * ((t - 0.05) / 0.003) ** 2), 1000.0)
     rhs = MAT.area * (MAT.E * eps + MAT.rho * MAT.nu ** 2 * love.rg ** 2 * time_derivative(sp, eps, 2))
     assert np.max(np.abs(force_eff(sp, love, eps) - rhs)) < 1e-10 * np.max(np.abs(rhs))
 
@@ -215,7 +215,7 @@ def test_force_eff_equals_love_effective_stress():
 @pytest.mark.parametrize("a_over_lambda,c_ref", [(0.1, 0.9905), (0.5, 0.68814)])
 def test_pochhammer_chree_phase_velocity_published_nu030(a_over_lambda, c_ref):
     """Published first-mode roots for nu = 0.30 (Rigby et al. 2018, solved as in Bancroft 1941)."""
-    pc = PochhammerChree(BarMaterial(71.7e9, 2810, 0.30, 0.008))
+    pc = PochhammerChree(BarMaterial(71.7, 2.81e-6, 0.30, 8.0))
     c = float(pc.phase_velocity_ratio_vs_a_over_lambda(a_over_lambda))
     assert abs(c - c_ref) <= 0.6 * 10 ** -(len(str(c_ref)) - 2)
 
@@ -238,7 +238,7 @@ def test_transfer_functions_compose_exactly():
         sim = SHPBSimulation(variant(SHPB, bar_model=model))
         sp = sim.sp
         for m in (sim.model1, sim.model2):
-            for a, b in ((0.3, 1.7), (0.85, 1.15), (2.0, 1.7)):
+            for a, b in ((300.0, 1700.0), (850.0, 1150.0), (2000.0, 1700.0)):
                 Ha = transfer(m, sp.omega, a, 0.0, sp.max_group_delay, sp.mask_distance)
                 Hb = transfer(m, sp.omega, b, 0.0, sp.max_group_delay, sp.mask_distance)
                 Hab = transfer(m, sp.omega, a + b, 0.0, sp.max_group_delay, sp.mask_distance)

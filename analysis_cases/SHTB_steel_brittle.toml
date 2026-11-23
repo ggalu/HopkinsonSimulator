@@ -3,11 +3,13 @@
 # Run the simulation first, then the analysis (results in results/<name>/):
 #   python hopkinson_simulator.py simulation_cases/SHTB_steel_brittle.toml
 #   python bussac_analysis.py analysis_cases/SHTB_steel_brittle.toml
-# SI units throughout. Every key below is required: the analysis takes no setting from the simulation. The
-# simulation settings file is read only to compare; on start the program prints both and marks every
-# difference, then analyses with the values given here. To study a wrong bar model, material or gauge
+# Units: mm, ms, kg, so that force is in kN, stress in GPa, velocity in mm/ms (= m/s) and frequency in 1/ms
+# (= kHz). Every key below is required: the analysis takes no setting from the simulation. The simulation
+# settings file is read only to compare; on start the program prints both and marks every difference, then
+# analyses with the values given here. To study a wrong bar model, material or gauge
 # position, change it here. The ground truth in the records file is used only to compute the errors.
 
+units = "mm-ms-GPa"              # unit system: mm, ms, kg (force kN, stress GPa)
 name = "SHTB_steel_brittle_bussac"  # results folder name
 records = "results/SHTB_steel_brittle/simulation.csv"  # records file (gauge records and truth), relative to the project root
 settings = "results/SHTB_steel_brittle/simulation.toml"  # simulation settings, read only for the comparison
@@ -30,22 +32,22 @@ setup = "shtb"                   # "shpb", "direct_impact" or "shtb" (error scal
 # A rho (s/k)^2 eps. For model B it gives the cut-off frequency on which f_max = "auto" is based.
 # The material enters through c0 = sqrt(E/rho), and for models B and C also through nu and the radius.
 bar_model = "B"                  # A: 1D wave equation, B: Love rod, C: Pochhammer-Chree (1st mode)
-material_input = { E = 210.0e9, rho = 7850.0, nu = 0.29, radius = 8.0e-3, inner_radius = 0.0, tau = 0.0 }  # input bar
-material_output = { E = 210.0e9, rho = 7850.0, nu = 0.29, radius = 8.0e-3, inner_radius = 0.0, tau = 0.0 }  # output bar
-                                 # E [Pa], rho [kg/m^3], nu [-], radius [m], inner_radius [m] (0: solid bar, > 0: tube)
-                                 # and tau [s], the Kelvin-Voigt retardation time (0: elastic)
+material_input = { E = 210.0, rho = 7.85e-6, nu = 0.29, radius = 8.0, inner_radius = 0.0, tau = 0.0 }  # input bar
+material_output = { E = 210.0, rho = 7.85e-6, nu = 0.29, radius = 8.0, inner_radius = 0.0, tau = 0.0 }  # output bar
+                                 # E [GPa], rho [kg/mm^3], nu [-], radius [mm], inner_radius [mm] (0: solid bar,
+                                 # > 0: tube) and tau [ms], the Kelvin-Voigt retardation time (0: elastic)
 
 [gauges]                         # assigned in order to the gauges I1, I2, ... and O1, O2, ... of the records file
-input = [0.3, 0.85]              # positions on the input bar [m from the interface]
-output = [0.3, 0.85]             # positions on the output bar [m from the interface]
-gauge_length = 2.0e-3            # active gauge length [m]
+input = [300.0, 850.0]           # positions on the input bar [mm from the interface]
+output = [300.0, 850.0]          # positions on the output bar [mm from the interface]
+gauge_length = 2.0               # active gauge length [mm]
 
 [separation]
-eta = 1000.0                     # Laplace damping [1/s]: removes the singularities at DC and at the
+eta = 1.0                        # Laplace damping [1/ms]: removes the singularities at DC and at the
                                  # frequencies n c / (2 D) of two gauges a distance D apart. Larger: better
                                  # conditioned, but errors grow like exp(eta t) late in the record
-f_max = "auto"                   # band limit [Hz]; "auto": 0.8 x the Love cut-off for model B, none for A and C;
-                                 # for a Kelvin-Voigt bar also at most the frequency where the reconstruction
-                                 # amplifies by 1e3 at the farthest gauge (exp(kappa x_max) = 1e3)
+f_max = "auto"                   # band limit [1/ms] (= kHz); "auto": 0.8 x the Love cut-off for model B, none
+                                 # for A and C; for a Kelvin-Voigt bar also at most the frequency where the
+                                 # reconstruction amplifies by 1e3 at the farthest gauge (exp(kappa x_max) = 1e3)
 gauge_length_correction = true   # include the averaging over the gauge length in the gauge model
-valid_margin = 20.0e-6           # errors are evaluated for t < T - x_max/c0 - valid_margin [s]
+valid_margin = 0.02              # errors are evaluated for t < T - x_max/c0 - valid_margin [ms]

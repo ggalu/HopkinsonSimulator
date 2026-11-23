@@ -35,11 +35,11 @@ ROOT = REPORT_DIR.parents[1]
 
 FIGURES = REPORT_DIR / "figures"
 FIGURES.mkdir(exist_ok=True)
-AL = BarMaterial(E=71.7e9, rho=2810.0, nu=0.33, radius=8.0e-3)
+AL = BarMaterial(E=71.7, rho=2.81e-6, nu=0.33, radius=8.0)     # units mm, ms, kg (GPa, kg/mm^3)
 
 
 def figure_dispersion():
-    f = np.linspace(1e3, 700e3, 7000)
+    f = np.linspace(1.0, 700.0, 7000)                 # [1/ms] = [kHz]
     w = 2 * np.pi * f
     fig, ax = plt.subplots(1, 2, figsize=(10, 3.8))
     for model, label, c in ((WaveEq1D(AL), "A: 1D wave equation", COLORS[0]),
@@ -50,9 +50,9 @@ def figure_dispersion():
         with np.errstate(divide="ignore", invalid="ignore"):
             cp = np.where(prop, w / k.real, np.nan)
             cg = np.where(prop, np.gradient(w, k.real), np.nan)
-        ax[0].plot(f / 1e3, cp / AL.c0, color=c, label=label)
-        ax[1].plot(f / 1e3, cg / AL.c0, color=c, label=label)
-    fc = LoveRod(AL).omega_cutoff / (2 * np.pi) / 1e3
+        ax[0].plot(f, cp / AL.c0, color=c, label=label)
+        ax[1].plot(f, cg / AL.c0, color=c, label=label)
+    fc = LoveRod(AL).omega_cutoff / (2 * np.pi)
     cR = PochhammerChree(AL).cRbar * PochhammerChree(AL).cT / AL.c0
     for a, name in zip(ax, ("phase velocity $c/c_0$", "group velocity $c_g/c_0$")):
         a.axvline(fc, color="k", ls="--", lw=0.8)
@@ -77,19 +77,19 @@ def normalised_det(x, eta, f):
 
 
 def figure_conditioning():
-    f = np.linspace(0.0, 30e3, 30001)
+    f = np.linspace(0.0, 30.0, 30001)
     fig, ax = plt.subplots(1, 2, figsize=(10, 3.6), gridspec_kw={"width_ratios": [3, 2]})
-    two, three = np.array([0.30, 0.85]), np.array([0.30, 0.62, 0.85])
+    two, three = np.array([300.0, 850.0]), np.array([300.0, 620.0, 850.0])
     floor = 1e-8                                  # the undamped two-gauge determinant reaches zero
-    ax[0].semilogy(f / 1e3, np.maximum(normalised_det(two, 0.0, f), floor), color=COLORS[0],
+    ax[0].semilogy(f, np.maximum(normalised_det(two, 0.0, f), floor), color=COLORS[0],
                    label="two gauges, $\\eta = 0$")
-    ax[0].semilogy(f / 1e3, normalised_det(two, 1000.0, f), color=COLORS[1], label="two gauges, $\\eta = 1000$ /s")
-    ax[0].semilogy(f / 1e3, np.maximum(normalised_det(three, 0.0, f), floor), color=COLORS[2],
+    ax[0].semilogy(f, normalised_det(two, 1.0, f), color=COLORS[1], label="two gauges, $\\eta = 1000$ /s")
+    ax[0].semilogy(f, np.maximum(normalised_det(three, 0.0, f), floor), color=COLORS[2],
                    label="three gauges, $\\eta = 0$")
     ax[0].set(xlabel="frequency $f$ [kHz]", ylabel="$\\det / (h_1 h_2)$", xlim=(0, 30), ylim=(1e-8, 2))
     ax[0].legend(loc="lower right", fontsize=8, framealpha=0.95)
-    fz = np.linspace(0.0, 300e3, 300001)
-    ax[1].semilogy(fz / 1e3, np.maximum(normalised_det(three, 0.0, fz), floor), color=COLORS[2],
+    fz = np.linspace(0.0, 300.0, 300001)
+    ax[1].semilogy(fz, np.maximum(normalised_det(three, 0.0, fz), floor), color=COLORS[2],
                    label="three gauges, $\\eta = 0$")
     ax[1].set(xlabel="frequency $f$ [kHz]", ylabel="$\\det / (h_1 h_2)$", xlim=(0, 300), ylim=(1e-8, 2))
     ax[1].legend(loc="lower left", fontsize=8)
@@ -135,7 +135,7 @@ def figure_signals(name, ex):
     for col, bar, side in ((0, 1, "input bar"), (1, 2, "output bar")):
         for j, i in enumerate(np.flatnonzero(ch["bar"] == bar)):
             ax[0, col].plot(t, ex["rec"][i] * PM, lw=0.9, color=COLORS[j],
-                            label=f"{ch['names'][i]} at {ch['distance_from_interface'][i]:.2f} m")
+                            label=f"{ch['names'][i]} at {ch['distance_from_interface'][i]:.0f} mm")
         ax[0, col].set(title=f"(a) gauge records, {side}" if col == 0 else f"(b) gauge records, {side}",
                        ylabel="strain [‰]")
         names = ("incident $a_1$", "reflected $b_1$") if bar == 1 else ("echo $a_2$", "transmitted $b_2$")
@@ -161,9 +161,9 @@ def figure_forces(name, ex):
     sgn = 1.0 if ex["setup"] == "shtb" else -1.0
     fig, ax = plt.subplots(2, 1, figsize=(10, 5.6), sharex=True, gridspec_kw={"height_ratios": [3, 2]})
     for bar, side, c in ((1, "input bar, $N_1$", COLORS[0]), (2, "output bar, $N_2$", COLORS[1])):
-        ax[0].plot(t, sgn * res[f"bar{bar}"]["force_E"] / 1e3, color=c, lw=1.1, label=f"{side}, separated")
+        ax[0].plot(t, sgn * res[f"bar{bar}"]["force_E"], color=c, lw=1.1, label=f"{side}, separated")
     for bar in (1, 2):
-        ax[0].plot(t, sgn * itf[f"bar{bar}"]["force_E"] / 1e3, "k--", lw=0.8,
+        ax[0].plot(t, sgn * itf[f"bar{bar}"]["force_E"], "k--", lw=0.8,
                    label="simulated (truth)" if bar == 1 else None)
     ax[0].set(title="(a) interface forces " + ("(tension positive)" if sgn > 0 else "(compression positive)"),
               ylabel="force [kN]")
@@ -195,7 +195,7 @@ def write_numbers(examples):
         waves = max(err[f"{b}_{w}"]["max"] for b in ("bar1", "bar2") for w in ("wave_in", "wave_out"))
         force = max(err[f"{b}_force_E"]["max"] for b in ("bar1", "bar2"))
         tag = name.lower()
-        vals = {"Valid": f"{ex['t_valid'] * US:.0f}", "Fmax": f"{ex['res']['bar1']['f_max'] / 1e3:.0f}",
+        vals = {"Valid": f"{ex['t_valid'] * US:.0f}", "Fmax": f"{ex['res']['bar1']['f_max']:.0f}",
                 "WaveErr": e(waves), "ForceErr": e(force),
                 "ImbSep": f"{100 * eq['max_relative_imbalance_separated']:.1f}",
                 "ImbTrue": f"{100 * eq['max_relative_imbalance_truth']:.1f}"}

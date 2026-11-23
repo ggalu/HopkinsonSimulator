@@ -21,8 +21,9 @@ its figures and the numbers it quotes.
 ```
 hopkinson_simulator.py   bar models, propagation, pulses, specimens, the three setups, output files, figure
 bussac_analysis.py       analysis case check, comparison of settings, Bussac separation, errors, figure
-simulation_cases/        SHPB.toml, direct_impact.toml, direct_impact_viscoelastic.toml, SHTB.toml
-analysis_cases/          the same four names
+simulation_cases/        SHPB.toml, direct_impact.toml, direct_impact_viscoelastic.toml, SHTB.toml,
+                         SHTB_steel_brittle.toml, SHTB_alu_brittle.toml
+analysis_cases/          the same six names
 tests/                   pytest tests of both programs
 reports/theory/          report on the methods (LaTeX) and the script of its figures
 reports/template/        LaTeX style of the reports
@@ -37,7 +38,7 @@ python hopkinson_simulator.py simulation_cases/SHPB.toml          # -> results/S
 python bussac_analysis.py analysis_cases/SHPB.toml                # -> results/SHPB_bussac/
 python hopkinson_simulator.py simulation_cases/*.toml --headless  # all cases, figures saved but not shown
 python bussac_analysis.py analysis_cases/*.toml --headless
-python -m pytest -q                                               # 52 tests, about 50 s
+python -m pytest -q                                               # 62 tests, about 100 s
 ```
 On start, the simulator checks each case file (see "Simulation case file") and prints its settings as a framed
 table: one row per key with its value and a short comment on its role, and one group of rows per table of the
@@ -49,7 +50,7 @@ then prints "Performing simulation, standby ..." and starts the coupling iterati
 | program | output in `results/<name>/` |
 |---|---|
 | simulator | `simulation.toml` (settings), `simulation.csv` (gauge records and interface truth), `specimen.csv` (specimen, source and loading-end histories), `waves.png` (gauge records and true interface waves) |
-| analysis | `bussac.json` (analysis case, comparison with the simulation settings, end of the valid window, errors, force imbalance), `bussac.png` (records, separated waves, force and velocity against the truth), `equilibrium.png` (forces at the two interfaces and their imbalance), `separated.txt` (time and the separated quantities of both bars) |
+| analysis | `bussac.json` (analysis case, comparison with the simulation settings, end of the valid window `t_valid_end_ms`, errors, force imbalance), `bussac.png` (records, separated waves, force and velocity against the truth), `equilibrium.png` (forces at the two interfaces and their imbalance), `separated.txt` (time in ms and the separated quantities of both bars, forces in kN, velocities in mm/ms) |
 
 ## How the simulator works
 The bars are not discretised in space. The simulator solves for the two strain waves at each bar–specimen
@@ -75,7 +76,7 @@ The model has one parameter, so it can match a real bar near one frequency only:
 proportion to frequency, while that of real polymers varies slowly over many decades. A choice is
 τ = tan δ / ω at the main frequency of the pulse. For ωτ ≫ 1 the phase velocity grows without bound, so the bar
 has no sharp wave front; these components are strongly damped. The example case
-`direct_impact_viscoelastic.toml` gives the polycarbonate output bar τ = 10⁻⁷ s, a placeholder and not a
+`direct_impact_viscoelastic.toml` gives the polycarbonate output bar τ = 10⁻⁷ s (`tau = 1.0e-4` in ms), a placeholder and not a
 measured value.
 
 A case is solved by a fixed-point iteration. In each pass the incoming waves are formed (from the loading and
@@ -100,6 +101,15 @@ The finite-difference model resolves wave propagation in the specimen, for cases
 an elastic–plastic law with linear hardening and an optional logarithmic strain-rate dependence, with
 engineering stress and strain. In the pressure setups the specimen faces are in unilateral contact with the
 bars by default (`tension_cutoff = true`): a face separates instead of carrying tension.
+
+Both specimen models have an optional brittle failure in tension, set by `failure_stress` in
+`[specimen.material]` (`inf` for no failure). The lumped specimen breaks in the substep in which its stress
+reaches the failure stress, and from then on it carries no force, in tension or in compression, for the rest
+of the record. The bars then see two free ends. In the finite-difference specimen each cell that reaches the
+failure stress carries no stress from then on, so the specimen separates at that cell. The column `failed` of
+`specimen.csv` is 1 after the failure. Failure is checked by a test with model A in the SHTB: up to failure
+the stress is that of the specimen without failure, and after failure the input bar reflects the incident
+wave as from a free end and the output bar receives nothing.
 
 ### The three setups
 - **SHPB** (`setup = "shpb"`). The incident strain pulse is prescribed at a source position on the input bar
@@ -127,7 +137,51 @@ massless spring of compliance C = Ls/(Es As), with T(ω) = 1/(1 + iωZC/2).
 In the example (`simulation_cases/SHTB.toml`) a POM striker of 0.8 m at 5 m/s produces an incident strain of
 about 4.3·10⁻⁴ for about 1.1 ms. The specimen (10 mm × Ø4 mm, an annealed aluminium) yields; its strain rate is
 about 260 /s, and its plastic strain reaches about 0.43 at the end of the 2 ms record. The specimen dimensions
-and the striker material are assumptions. The specimen model has no necking or failure.
+and the striker material are assumptions. The specimen model has no necking, and this case uses no failure.
+
+A second example, `simulation_cases/SHTB_steel_brittle.toml`, keeps the POM striker and the flange of the first
+but has steel bars (E = 210 GPa, ρ = 7850 kg/m³, ν = 0.29, the same 16 mm diameter) and a linear elastic,
+brittle specimen: E = 80 GPa, a round cross-section of 10 mm², a parallel gauge length of 15 mm and a failure
+stress of 1 GPa, so that it breaks at 10 kN. Only the parallel section is modelled, and the shoulders are taken
+as rigid. The steel bars have 2.7 times the impedance of the aluminium bars, so the same striker produces a
+smaller strain in them. At the 5 m/s of the first case the incident strain is 2.0·10⁻⁴ and the specimen stress
+reaches only 860 MPa, so the specimen does not break. The case therefore uses 8 m/s, which gives an incident
+strain of about 3.3·10⁻⁴ (13.8 kN). The specimen then breaks at 0.66 ms, about 0.12 ms after the incident wave
+arrives, during the rise of the transmitted force; its strain rate before failure is about 140 /s. After failure
+the input bar reflects the rest of the incident pulse with the opposite sign, and the transmitted pulse ends in
+a step.
+
+The specimen of this case uses the finite-difference model with 40 cells. A run with the lumped model gives the
+same failure time (663.2 µs) and the same peak force to within 0.1 %. The finite-difference model shows a force
+imbalance between the two faces of up to 4.8 % while the load rises, and less than 0.1 % shortly before failure.
+At failure the stress along the specimen is nearly uniform, and all cells have the same failure stress.
+Therefore 38 of the 40 cells reach the failure stress within 0.12 µs, which is faster than the unloading wave
+from the first broken cell can travel (one cell in 0.07 µs). Both face forces then fall to zero within 0.4 µs,
+as in the lumped model. A specimen with one weakest section would instead unload over the 2.7 µs that a wave
+needs to cross it; the model has no such variation of strength along the specimen.
+
+The case `simulation_cases/SHTB_alu_brittle.toml` is the twin of this case with Al 7075 bars (E = 71.7 GPa,
+ρ = 2810 kg/m³, ν = 0.33) and a striker velocity of 11.1 m/s; all other settings are the same. The aluminium
+bars have about one third of the impedance of the steel bars (2854 kg/s against 8163 kg/s), so the striker at
+8 m/s would produce an incident force of only 9.9 kN instead of 13.8 kN. The specimen behaves as a stiff
+spring, and its force cannot exceed the incident force by much, so at 8 m/s its stress peaks at 988 MPa and it
+does not break. The velocity of 11.1 m/s gives the incident force of the steel case and breaks the specimen at
+639 µs. In that run the transmitted strain
+before failure is 6.9·10⁻⁴, against 2.4·10⁻⁴ with steel bars, because the strain for a given force is inversely
+proportional to E. The specimen is loaded faster (10–90 % force rise in 59 µs against 85 µs, strain rate
+200 /s against 140 /s), and the face forces differ by up to 9.6 % during the rise, against 4.8 %; within the
+30 µs before failure they differ by less than 0.2 % in both runs. With both bar materials, the specimen strain
+from the separated velocities agrees with the truth to 0.1 % up to 1 µs before failure. The specimen stress
+from the separated output-bar force is within 2.5 % of the truth from 5 µs before failure and earlier, but it
+overshoots to about 1080 MPa (8 %) in the last 1–2 µs, because the band-limited separation rings at the step
+of the failure. These numbers come from single noise-free runs; with measured records the larger strain of the
+aluminium bars gives a 2.9 times larger signal for the same force.
+
+The Bussac analysis of this case gives a largest relative error of the separated waves of 0.30 (relative to the
+peak incident wave), because the force drops from 10 kN to zero within one sample (0.2 µs). A separation that
+is band-limited to 401 kHz cannot reproduce this step, so the error is concentrated within about 25 µs of the
+failure. Outside the interval from 640 to 690 µs, the largest error of the outgoing waves is 3.7·10⁻³ and
+that of the incoming waves 4·10⁻⁵. These numbers rest on a single noise-free run.
 
 ## Simulation case file
 One self-contained, commented TOML file per case. The tables are: `[bars]` (with the bar lengths
@@ -137,7 +191,8 @@ the direct impact, `[striker]`, `[striker.material]` and `[flange]` for the SHTB
 `[specimen.material]`, `[sampling]` and `[coupling]`. A material table (of a bar or of the striker) has the keys
 `E`, `rho`, `nu`, `radius`, `inner_radius` (0 for a solid bar) and `tau`, the Kelvin–Voigt retardation time
 (0 for an elastic bar; see above). Every parameter is commented in the example files. To make a new case, copy
-one, rename it and edit it. SI units throughout; strain, stress and force are positive in tension.
+one, rename it and edit it. The units are those of the section "Units" below; strain, stress and force are
+positive in tension.
 
 Every key is required, and no other key is accepted, as in the analysis case. The simulator checks the case
 against a registry of the keys (`SIMULATION_KEYS` in `hopkinson_simulator.py`), which gives for each key its
@@ -150,17 +205,50 @@ has a default. The keys of earlier versions that gave a choice between alternati
 `pulse.preset` (give `rise`, `plateau` and `fall`), `specimen.material.Et` (give the plastic modulus
 H = E Et/(E − Et)) and `flange.mass` (the mass follows from the dimensions and the density).
 
+## Units
+Both programs use one consistent unit system, in the case files, in the computation and in the output files.
+Its base units are mm, ms and kg. Because the system is consistent, the equations of the program contain no
+conversion factors, and the other units follow from the base units:
+
+| quantity | unit | example |
+|---|---|---|
+| length, radius, gauge position | mm | bar length 2700.0 |
+| time, retardation time τ | ms | record length 2.0 |
+| mass | kg | flange mass 0.197 |
+| density | kg/mm³ | steel 7.85e-6, Al 7075 2.81e-6 |
+| force | kN | |
+| stress, Young's modulus | GPa | Al 7075 71.7 |
+| velocity | mm/ms, equal to m/s | striker 5.0 |
+| frequency, sampling rate | 1/ms, equal to kHz | sampling rate 5000.0 |
+| strain rate, Laplace damping η | 1/ms | η = 1.0 |
+| impedance ρ c₀ A | kg/ms | |
+
+A simulation case and an analysis case begin with the key `units = "mm-ms-GPa"`. This key is required, so
+that a case file of an earlier version, which was written in SI units (m, s, kg, N, Pa), is refused with a
+message and is not read as if its numbers were in mm and ms; a bar length of 2.7 would otherwise be read as
+2.7 mm. To convert such a case, multiply each value by the factor of its dimension: lengths by 10³, times by
+10³, frequencies and rates by 10⁻³, stresses and moduli by 10⁻⁹, densities by 10⁻⁹; velocities and all
+dimensionless values stay. The function `convert_case_from_si` in `hopkinson_simulator.py` does this for a
+simulation case read with `load_config`; it does not keep the comments of the file. A records file of the
+earlier format `hopkinson-csv-1.0`, which was in SI units, is refused as well, and a simulation settings file
+without `units` is refused by the analysis; both must be computed again.
+
+The test `test_results_do_not_depend_on_the_unit_system` runs one case with its numbers in mm–ms–GPa and with
+the same case in SI numbers, and checks that the results agree after the conversion of their units. This test
+would fail if a constant in the code assumed one unit system, for example an absolute tolerance in seconds.
+
 ## Simulation output
 The simulator writes three text files into `results/<name>/`. Global x points from the input bar towards the
 output bar; displacements and velocities are positive in +x. Strain, stress and force are positive in tension.
-Gauge positions are distances from the respective bar–specimen interface into the bar. SI units throughout.
+Gauge positions are distances from the respective bar–specimen interface into the bar. The units are those of
+the section "Units": time in ms, force in kN, stress in GPa, velocity in mm/ms.
 
 **`simulation.toml`** holds the case file as it was read (without its comments) and a `[derived]` table of
-quantities computed from it: for each bar the model, the material, c0, the radius of gyration r_g and the
-cut-off frequency of model B; the specimen; for the SHTB the striker, the flange mass and the nominal incident
+quantities computed from it: for each bar the model, the material, c0 (mm/ms), the radius of gyration r_g (mm)
+and the cut-off frequency of model B (1/ms, that is kHz); the specimen; for the SHTB the striker, the flange mass and the nominal incident
 strain; round-trip times; and the solver information (number of coupling passes, the change in each pass).
 
-**`simulation.csv`** (format `hopkinson-csv-1.0`) is the file the analysis reads. It begins with six comment
+**`simulation.csv`** (format `hopkinson-csv-2.0`) is the file the analysis reads. It begins with six comment
 lines that start with `#`: the format name, the case name and sampling rate, the units, the sign convention and
 the meaning of the columns. One header row and one row per sample follow, comma-separated, with 13 significant
 digits. Units are given in brackets in the header where a column is not a strain. The file can be read without
@@ -168,12 +256,12 @@ the project code, for example with `numpy.loadtxt(path, delimiter=",", skiprows=
 
 | column | meaning |
 |---|---|
-| `t[s]` | time, uniform |
+| `t[ms]` | time, uniform |
 | `I1, I2, O1, O2` | gauge strain, averaged over the gauge length if `[gauges] averaging = true`; I: input bar, O: output bar, numbered in the order of `[gauges] input` and `output` |
 | `I1_point, …, O2_point` | strain at the gauge centre |
 | `bar{1,2}_wave_in`, `wave_out` | strain wave arriving at and leaving the interface (bar 1: wave_in travels +x; bar 2: wave_in travels −x) |
-| `bar{1,2}_strain`, `velocity[m/s]` | wave_in + wave_out; particle velocity (consistent with the bar model; direct impact: bar 1 includes v0) |
-| `bar{1,2}_force_E[N]`, `force_eff[N]` | A·E·ε and A·ρ(ω/k)²ε (model B: exactly A·σ_eff of Love theory; model A: equal to force_E) |
+| `bar{1,2}_strain`, `velocity[mm/ms]` | wave_in + wave_out; particle velocity (consistent with the bar model; direct impact: bar 1 includes v0) |
+| `bar{1,2}_force_E[kN]`, `force_eff[kN]` | A·E·ε and A·ρ(ω/k)²ε (model B: exactly A·σ_eff of Love theory; model A: equal to force_E) |
 
 The gauge positions and the gauge length are not in this file. They are settings, and they are in
 `simulation.toml` and in the analysis case.
@@ -182,36 +270,39 @@ The gauge positions and the gauge length are not in this file. They are settings
 
 | column | meaning |
 |---|---|
-| `stress[Pa]`, `strain`, `strain_rate[1/s]`, `plastic_strain` | specimen model output (engineering, tension +) |
-| `force_face{1,2}[N]`, `velocity_face{1,2}[m/s]`, `contact_open_face{1,2}` | forces and velocities as seen by the specimen model; 1 where a face is separated from its bar |
-| `contact_force[N]`, `flange_velocity[m/s]`, `striker_wave_out`, `striker_wave_in`, `contact_open` | SHTB only: the loading end (contact force compression +; 1 where the striker is separated from the flange) |
+| `stress[GPa]`, `strain`, `strain_rate[1/ms]`, `plastic_strain` | specimen model output (engineering, tension +) |
+| `force_face{1,2}[kN]`, `velocity_face{1,2}[mm/ms]`, `contact_open_face{1,2}` | forces and velocities as seen by the specimen model; 1 where a face is separated from its bar |
+| `failed` | 1 after the specimen has broken (see `failure_stress`), 0 before |
+| `contact_force[kN]`, `flange_velocity[mm/ms]`, `striker_wave_out`, `striker_wave_in`, `contact_open` | SHTB only: the loading end (contact force compression +; 1 where the striker is separated from the flange) |
 | `source_eps_ref` | the right-going wave where it is defined: the prescribed pulse (SHPB), zero (direct impact), the wave leaving the loading end (SHTB) |
 
 ## Analysis case file
 Every key is required; the analysis takes no setting from the simulation. The example files in
 `analysis_cases/` carry the values of the matching simulation cases and comment every key.
 ```toml
+units = "mm-ms-GPa"                          # required; see "Units"
 name = "SHPB_bussac"                         # results/<name>/
 records = "results/SHPB/simulation.csv"      # records file, relative to the project root
 settings = "results/SHPB/simulation.toml"    # simulation settings, read only for the comparison
 channels = "averaged"                        # "averaged" or "point" (strain at the gauge centres)
 setup = "shpb"                               # "shpb", "direct_impact" or "shtb"
 # [impact]                                   # required for setup = "direct_impact", refused otherwise
-# velocity = 5.0                             # impact velocity v0 [m/s]
+# velocity = 5.0                             # impact velocity v0 [mm/ms]
 [bars]
 bar_model = "B"                              # A, B or C
-material_input = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3, inner_radius = 0.0, tau = 0.0 }
-material_output = { E = 71.7e9, rho = 2810.0, nu = 0.33, radius = 8.0e-3, inner_radius = 0.0, tau = 0.0 }
-                                             # inner_radius [m] (0: solid, > 0: tube), tau [s] (Kelvin-Voigt; 0: elastic)
+material_input = { E = 71.7, rho = 2.81e-6, nu = 0.33, radius = 8.0, inner_radius = 0.0, tau = 0.0 }
+material_output = { E = 71.7, rho = 2.81e-6, nu = 0.33, radius = 8.0, inner_radius = 0.0, tau = 0.0 }
+                                             # E [GPa], rho [kg/mm^3], radius and inner_radius [mm] (0: solid,
+                                             # > 0: tube), tau [ms] (Kelvin-Voigt; 0: elastic)
 [gauges]
-input = [0.3, 0.85]                          # [m from the interface], in the order I1, I2, …
-output = [0.3, 0.85]                         # in the order O1, O2, …
-gauge_length = 2.0e-3                        # [m]
+input = [300.0, 850.0]                      # [mm from the interface], in the order I1, I2, …
+output = [300.0, 850.0]                      # in the order O1, O2, …
+gauge_length = 2.0                           # [mm]
 [separation]
-eta = 1000.0                                 # Laplace damping [1/s]
-f_max = "auto"                               # band limit [Hz], inf, or "auto" (see below)
+eta = 1.0                                    # Laplace damping [1/ms]
+f_max = "auto"                               # band limit [1/ms] (= kHz), inf, or "auto" (see below)
 gauge_length_correction = true
-valid_margin = 20.0e-6                       # [s]
+valid_margin = 0.02                           # [ms]
 ```
 A missing, unknown or wrongly typed key stops the program, with a message that names all such keys. The
 number of positions in `[gauges]` must match the number of I and O columns in the records file. The
@@ -288,7 +379,7 @@ right τ agrees to 10⁻⁵ or better (test below). These numbers rest on single
 ## Tests
 `tests/test_simulator.py` compares the simulator with closed-form solutions for model A (d'Alembert solution
 with an elastic specimen, direct impact, the loading end of the SHTB, and the bonded elastic specimen of the SHTB
-as a spring), checks the Love dispersion relation, the Love equation of motion and the phase and group velocity
+as a spring), checks the brittle failure of the lumped and the finite-difference specimen, checks the Love dispersion relation, the Love equation of motion and the phase and group velocity
 of a tone burst, checks the Pochhammer–Chree solver against published values and its limits, and checks that
 the gauge records stored in a file are the propagations of the stored interface waves.
 `tests/test_bussac.py` checks that the separation is exact for model A (SHPB and SHTB) and for model C with the
@@ -296,7 +387,9 @@ continued wavenumber, and that the settings of the analysis case take effect and
 `tests/test_files.py` checks that the settings TOML and the records CSV of all three setups are read back as
 written, that an incomplete analysis case and an incomplete or wrong simulation case are refused with the names
 of the keys, that the example simulation cases are complete, that the printed settings list every key with its
-comment, and that the comparison marks exactly the settings that differ.
+comment, and that the comparison marks exactly the settings that differ. It also checks the units: a case in SI
+units and a records file of format 1.0 are refused, `convert_case_from_si` converts a case, and the SHPB and SHTB
+cases give the same results when their numbers are given in SI units.
 `tests/test_viscoelastic.py` checks the Kelvin–Voigt wavenumber (Im k < 0, the expansions for small ωτ, identity
 with the elastic models for τ = 0), the force operator, the decay of a pulse, the exact composition of the
 transfer functions, the analytic continuation used by the analysis, the band limit "auto", and the separation

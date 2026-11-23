@@ -25,8 +25,10 @@ solution exact for one more round trip in the bars. The gauge records are the pr
 interface waves to the gauge positions, so the stored waves are the exact reference for wave separation.
 
 The code was extracted from the wavePINN project on 2026-11-10; the sections below name their origin.
-SI units throughout. Strain, stress and force are positive in tension; global x points from the input bar
-toward the output bar; gauge positions are distances from the bar-specimen interface into each bar.
+Units: mm, ms and kg, so that force is in kN, stress in GPa, velocity in mm/ms (= m/s), density in kg/mm^3
+and frequency in 1/ms (= kHz); see UNITS. Strain, stress and force are positive in tension; global x points
+from the input bar toward the output bar; gauge positions are distances from the bar-specimen interface into
+each bar.
 """
 from __future__ import annotations
 
@@ -75,12 +77,12 @@ ROOT = Path(__file__).resolve().parent
 
 @dataclass(frozen=True)
 class BarMaterial:
-    E: float        # Young's modulus [Pa]
-    rho: float      # density [kg/m^3]
+    E: float        # Young's modulus [GPa]
+    rho: float      # density [kg/mm^3]
     nu: float       # Poisson's ratio [-]
-    radius: float   # bar radius a [m] (outer radius of a tube)
-    inner_radius: float = 0.0   # inner radius of a tube [m]; 0 for a solid bar
-    tau: float = 0.0            # Kelvin-Voigt retardation time [s]; 0 for an elastic bar
+    radius: float   # bar radius a [mm] (outer radius of a tube)
+    inner_radius: float = 0.0   # inner radius of a tube [mm]; 0 for a solid bar
+    tau: float = 0.0            # Kelvin-Voigt retardation time [ms]; 0 for an elastic bar
 
     @property
     def c0(self) -> float:
@@ -92,7 +94,7 @@ class BarMaterial:
 
     @property
     def impedance(self) -> float:
-        """Mechanical impedance rho*c0*A [N s/m]."""
+        """Mechanical impedance rho*c0*A [kg/ms] (= kN ms/mm)."""
         return self.rho * self.c0 * self.area
 
 
@@ -355,7 +357,7 @@ def gauge_average_factor(k: np.ndarray, gauge_length: float) -> np.ndarray:
     return out
 
 
-def group_delay_per_metre(model: BarModel, omega: np.ndarray) -> np.ndarray:
+def group_delay_per_length(model: BarModel, omega: np.ndarray) -> np.ndarray:
     """dk/domega = 1/c_g for propagating components (inf where k is not finite)."""
     kr = np.real(model.wavenumber(omega))
     with np.errstate(invalid="ignore"):
@@ -385,7 +387,7 @@ def transfer(model: BarModel, omega: np.ndarray, distance: float, gauge_length: 
     if max_group_delay is not None and distance > 0:
         dm = distance if mask_distance is None else mask_distance
         weak = (kappa == 0) if model.mat.tau == 0 else (kappa * dm < 30.0)
-        ok &= ~(weak & (dm * group_delay_per_metre(model, omega) > max_group_delay))
+        ok &= ~(weak & (dm * group_delay_per_length(model, omega) > max_group_delay))
     H[ok] = np.exp(-1j * k[ok] * distance)
     if gauge_length > 0:
         H[ok] *= gauge_average_factor(k[ok], gauge_length)
@@ -438,15 +440,15 @@ def _ramp(x, kind: str):
 
 @dataclass
 class TrapezoidPulse:
-    """Trapezoid with smooth ramps. Times in s, amplitude in strain (signed, tension +).
+    """Trapezoid with smooth ramps. Times in ms, amplitude in strain (signed, tension +).
 
     rise / fall are the full 0-100 % ramp durations. The pulse starts at t_start.
     """
     amplitude: float = -1.0e-3
-    t_start: float = 20e-6
-    rise: float = 30e-6
-    plateau: float = 150e-6
-    fall: float = 30e-6
+    t_start: float = 0.02
+    rise: float = 0.03
+    plateau: float = 0.15
+    fall: float = 0.03
     ramp: str = "smoothstep7"
 
     def __call__(self, t):
@@ -505,15 +507,18 @@ class SpecimenMaterial:
     (tangent modulus E_t = E H / (E + H)).
     tension_cutoff: the specimen-bar contact cannot transmit tension (sigma <= 0);
     a positive trial stress means the faces separate (gap), sigma = 0.
+    failure_stress: brittle tensile failure; once the tensile stress reaches it, the specimen (lumped) or the
+    cell (fd) carries no stress for the rest of the record, in tension and in compression. inf: no failure.
     """
-    E: float = 69.0e9
-    rho: float = 2710.0
-    sigma0: float = 35.0e6
-    H: float = 200.0e6
+    E: float = 69.0             # [GPa]
+    rho: float = 2.71e-6        # [kg/mm^3]
+    sigma0: float = 0.035       # [GPa]
+    H: float = 0.2              # [GPa]
     C: float = 0.015
-    edot0: float = 1.0
+    edot0: float = 1.0e-3       # [1/ms]
     rate_dependent: bool = True
     tension_cutoff: bool = True
+    failure_stress: float = np.inf
 
     def yield_stress(self, alpha, edot_abs):
         Y = self.sigma0 + self.H * alpha
@@ -558,7 +563,8 @@ class LumpedSpecimen:
         P = 2.0 * (c1 * np.asarray(a1) + c2 * np.asarray(a2))
         n = P.size
         sig = np.zeros(n); e = np.zeros(n); ep = np.zeros(n); alp = np.zeros(n)
-        opened = np.zeros(n)
+        opened = np.zeros(n); failed = np.zeros(n)
+        broken = False
         D = dt * Q / (2 * Ls)
         s_n = e_n = ep_n = al_n = 0.0
         P_n = P[0]
@@ -566,7 +572,9 @@ class LumpedSpecimen:
             P1 = P[i]
             B = e_n + dt / (2 * Ls) * (P_n - Q * s_n + P1)
             s_tr = Es * (B - ep_n) / (1.0 + Es * D)
-            if m.tension_cutoff and s_tr >= 0.0:
+            if broken:
+                s1, e1, ep1, al1 = 0.0, B, ep_n, al_n     # separated halves: no force
+            elif m.tension_cutoff and s_tr >= 0.0:
                 s1, e1, ep1, al1 = 0.0, B, ep_n, al_n
                 opened[i] = float(s_tr > 1e-6 * Es)   # diagnostic flag: gap ~ Ls*(e - ep) > 1e-6 Ls
             else:
@@ -589,6 +597,11 @@ class LumpedSpecimen:
                     dal = sgn * ((e1 - ep_n) - s1 / Es)
                     ep1 = ep_n + sgn * dal
                     al1 = al_n + dal
+                if s1 >= m.failure_stress:
+                    # brittle failure within this step: the stress drops to zero from here on
+                    broken = True
+                    s1, e1 = 0.0, B
+            failed[i] = float(broken)
             sig[i], e[i], ep[i], alp[i] = s1, e1, ep1, al1
             s_n, e_n, ep_n, al_n, P_n = s1, e1, ep1, al1, P1
         N = As * sig
@@ -602,6 +615,7 @@ class LumpedSpecimen:
             "velocity_face1": c1 * (-np.asarray(a1) + b1),
             "velocity_face2": c2 * (np.asarray(a2) - b2),
             "contact_open_face1": opened, "contact_open_face2": opened,
+            "failed": failed,
         }
 
 
@@ -631,7 +645,7 @@ class FDSpecimen:
     kind = "fd"
 
     def __init__(self, length, diameter, material: SpecimenMaterial, n_cells: int = 40, cfl: float = 0.5,
-                 viscosity: float = 0.3, rate_filter_time: float = 0.5e-6, contact_tolerance: float = 1e-6):
+                 viscosity: float = 0.3, rate_filter_time: float = 0.5e-3, contact_tolerance: float = 1e-6):
         self.Ls = float(length)
         self.Ds = float(diameter)
         self.mat = material
@@ -670,7 +684,9 @@ class FDSpecimen:
         n = a1.size
         v = np.zeros(nc + 1); sig = np.zeros(nc); e = np.zeros(nc); ep = np.zeros(nc); alp = np.zeros(nc)
         gap1 = gap2 = 0.0          # face separations (>= 0), only with tension_cutoff
-        keys = ("N1", "N2", "v0", "vn", "vb1", "vb2", "stress", "strain", "plastic_strain", "open1", "open2")
+        keys = ("N1", "N2", "v0", "vn", "vb1", "vb2", "stress", "strain", "plastic_strain", "open1", "open2",
+                "failed")
+        broken = np.zeros(nc, dtype=bool)   # cells that have failed (carry no stress)
         out = {k: np.zeros(n) for k in keys}
         rate_C = m.C if m.rate_dependent else 0.0
         qcoef = self.viscosity * m.rho * self.cs * dx
@@ -713,7 +729,7 @@ class FDSpecimen:
             # symmetric elastic-plastic return mapping (material carries tension)
             edot = de / dt
             rate_f += kf * (np.abs(edot) - rate_f)
-            q = qcoef * edot
+            q = np.where(broken, 0.0, qcoef * edot)
             s_tr = Es * (e - ep)
             Y = m.yield_stress(alp, rate_f)
             rate_fac = 1.0 + rate_C * np.log(np.maximum(rate_f / m.edot0, 1.0))
@@ -721,6 +737,9 @@ class FDSpecimen:
             ep = ep + np.sign(s_tr) * dal
             alp = alp + dal
             sig = Es * (e - ep)
+            broken |= sig >= m.failure_stress
+            sig[broken] = 0.0
+            out["failed"][i] = float(broken.any())
             out["N1"][i], out["N2"][i] = N1, N2
             out["v0"][i], out["vn"][i] = v[0], v[-1]
             out["vb1"][i], out["vb2"][i] = vb1, vb2
@@ -737,6 +756,7 @@ class FDSpecimen:
             "force_face1": out["N1"], "force_face2": out["N2"],
             "velocity_face1": out["vb1"], "velocity_face2": out["vb2"],
             "contact_open_face1": out["open1"], "contact_open_face2": out["open2"],
+            "failed": out["failed"],
         }
 
 
@@ -784,7 +804,8 @@ def make_specimen(cfg: dict):
 # The gauges see only the waves a1, b1 (the rigid motion carries no strain); a1 is the far-end
 # echo of b1. The bar-1 velocities (interface truth, velocity_at) include v0.
 
-FORMAT_VERSION = "hopkinson-csv-1.0"
+FORMAT_VERSION = "hopkinson-csv-2.0"           # 2.0: units mm, ms, kg (see UNITS)
+OLD_FORMATS = {"hopkinson-csv-1.0": "a records file of an earlier version, in SI units (s, m, N)"}
 
 
 def deep_merge(base: dict, over: dict) -> dict:
@@ -823,6 +844,17 @@ NUMBER, INTEGER, TEXT, FLAG, POSITIONS = "number", "integer", "text", "true/fals
 class Key:
     kind: object        # NUMBER, INTEGER, TEXT, FLAG, POSITIONS, or a tuple of the allowed values
     comment: str
+    dim: str = ""       # physical dimension of a number (a key of SI_FACTORS); "" for dimensionless and text
+
+
+# Units of the case files, of the computation and of the output files: a consistent system with the base units
+# mm, ms and kg, so that no conversion factors appear in the equations.
+UNITS = "mm-ms-GPa"
+UNITS_TEXT = ("mm, ms, kg; force kN, stress GPa, velocity mm/ms (= m/s), density kg/mm^3, frequency 1/ms "
+              "(= kHz), strain dimensionless")
+# The factor that converts a value in SI units (m, s, kg) to these units, for each dimension of the registry.
+SI_FACTORS = {"length": 1e3, "time": 1e3, "frequency": 1e-3, "rate": 1e-3, "stress": 1e-9, "density": 1e-9,
+              "velocity": 1.0}
 
 
 class Table(dict):
@@ -835,57 +867,63 @@ class Table(dict):
 
 def _material(which: str) -> Table:
     return Table(f"material and cross-section of the {which}", {
-        "E": Key(NUMBER, "Young's modulus [Pa]"),
-        "rho": Key(NUMBER, "density [kg/m^3]"),
+        "E": Key(NUMBER, "Young's modulus [GPa]", "stress"),
+        "rho": Key(NUMBER, "density [kg/mm^3]", "density"),
         "nu": Key(NUMBER, "Poisson's ratio [-]; enters the dispersion of models B and C"),
-        "radius": Key(NUMBER, "outer radius [m]"),
-        "inner_radius": Key(NUMBER, "inner radius [m]; 0 for a solid bar, > 0 for a tube"),
-        "tau": Key(NUMBER, "Kelvin-Voigt retardation time [s]; 0: elastic (model C: elastic only)"),
+        "radius": Key(NUMBER, "outer radius [mm]", "length"),
+        "inner_radius": Key(NUMBER, "inner radius [mm]; 0 for a solid bar, > 0 for a tube", "length"),
+        "tau": Key(NUMBER, "Kelvin-Voigt retardation time [ms]; 0: elastic (model C: elastic only)", "time"),
     })
 
 
 SIMULATION_KEYS = Table("", {
+    "units": Key((UNITS,), "unit system of the case: " + UNITS_TEXT),
     "name": Key(TEXT, "name of the case and of its results folder results/<name>/"),
     "setup": Key(("shpb", "direct_impact", "shtb"),
                  "shpb: prescribed pulse; direct_impact: input bar is the projectile; shtb: tension bar"),
     "bar_model": Key(("A", "B", "C"), "wave model of the bars: A 1D wave equation, B Love rod, "
                                       "C Pochhammer-Chree"),
     "bars": Table("the input bar and the output bar", {
-        "length_input": Key(NUMBER, "length of the input bar [m] (shtb: flange to specimen)"),
-        "length_output": Key(NUMBER, "length of the output bar [m]"),
+        "length_input": Key(NUMBER, "length of the input bar [mm] (shtb: flange to specimen)", "length"),
+        "length_output": Key(NUMBER, "length of the output bar [mm]", "length"),
         "far_end_reflections": Key(FLAG, "true: free far ends reflect the waves with flipped sign; "
                                          "false: absorbing (shtb: output bar only)"),
         "material_input": _material("input bar"),
         "material_output": _material("output bar"),
     }),
     "gauges": Table("strain gauges", {
-        "input": Key(POSITIONS, "positions on the input bar [m from the specimen face], in the order I1, I2, ..."),
-        "output": Key(POSITIONS, "positions on the output bar [m from the specimen face], in the order O1, O2, ..."),
-        "gauge_length": Key(NUMBER, "active length of each gauge [m]"),
+        "input": Key(POSITIONS, "positions on the input bar [mm from the specimen face], in the order I1, I2, ...",
+                     "length"),
+        "output": Key(POSITIONS, "positions on the output bar [mm from the specimen face], in the order O1, O2, ...",
+                      "length"),
+        "gauge_length": Key(NUMBER, "active length of each gauge [mm]", "length"),
         "averaging": Key(FLAG, "true: records are averaged over the gauge length; false: strain at the centre"),
     }),
     "specimen": Table("specimen between the bars", {
         "kind": Key(("lumped", "fd"), "lumped: uniform stress, no inertia; fd: finite differences with "
                                       "wave propagation"),
-        "length": Key(NUMBER, "specimen length [m]"),
-        "diameter": Key(NUMBER, "specimen diameter [m]"),
-        "material": Table("elastic-plastic law with linear hardening, engineering stress and strain", {
-            "E": Key(NUMBER, "Young's modulus [Pa]"),
-            "rho": Key(NUMBER, "density [kg/m^3]; used only by kind = \"fd\""),
-            "sigma0": Key(NUMBER, "initial yield stress [Pa]"),
-            "H": Key(NUMBER, "hardening modulus, slope of stress against plastic strain [Pa]"),
+        "length": Key(NUMBER, "specimen length [mm]", "length"),
+        "diameter": Key(NUMBER, "specimen diameter [mm]", "length"),
+        "material": Table("elastic-plastic law with linear hardening and optional brittle failure, engineering "
+                          "stress and strain", {
+            "E": Key(NUMBER, "Young's modulus [GPa]", "stress"),
+            "rho": Key(NUMBER, "density [kg/mm^3]; used only by kind = \"fd\"", "density"),
+            "sigma0": Key(NUMBER, "initial yield stress [GPa]", "stress"),
+            "H": Key(NUMBER, "hardening modulus, slope of stress against plastic strain [GPa]", "stress"),
             "C": Key(NUMBER, "rate sensitivity: yield stress times 1 + C ln(edot/edot0) [-]"),
-            "edot0": Key(NUMBER, "reference strain rate of the rate sensitivity [1/s]"),
+            "edot0": Key(NUMBER, "reference strain rate of the rate sensitivity [1/ms]", "rate"),
             "rate_dependent": Key(FLAG, "true: yield stress depends on the strain rate; false: C and edot0 "
                                         "are not used"),
             "tension_cutoff": Key(FLAG, "true: a face separates instead of carrying tension; false: bonded "
                                         "(shtb)"),
+            "failure_stress": Key(NUMBER, "tensile stress at which the specimen breaks and then carries no "
+                                          "force [GPa]; inf: no failure", "stress"),
         }),
     }),
     "sampling": Table("time axis of the records and of the solver", {
-        "rate": Key(NUMBER, "sampling rate of the records [Hz]"),
-        "duration": Key(NUMBER, "length of the records [s]"),
-        "truth_margin": Key(NUMBER, "time simulated beyond the end of the records, then cut off [s]"),
+        "rate": Key(NUMBER, "sampling rate of the records [1/ms] (= kHz)", "frequency"),
+        "duration": Key(NUMBER, "length of the records [ms]", "time"),
+        "truth_margin": Key(NUMBER, "time simulated beyond the end of the records, then cut off [ms]", "time"),
         "n_sub": Key(INTEGER, "substeps per sample of the specimen (shtb: also of the loading end)"),
         "pad_factor": Key(NUMBER, "FFT length as a multiple of the record length (against wrap-around)"),
     }),
@@ -898,36 +936,38 @@ SIMULATION_KEYS = Table("", {
 SETUP_KEYS = {
     "shpb": {
         "source": Table("where the incident pulse is prescribed", {
-            "distance_from_interface": Key(NUMBER, "distance of the source from the specimen face [m]"),
+            "distance_from_interface": Key(NUMBER, "distance of the source from the specimen face [mm]", "length"),
         }),
         "pulse": Table("incident strain pulse at the source: a trapezoid with smooth ramps", {
             "amplitude": Key(NUMBER, "plateau strain [-]; negative = compression"),
-            "t_start": Key(NUMBER, "start of the pulse at the source [s]"),
-            "rise": Key(NUMBER, "duration of the rising ramp, 0 to 100 % [s]"),
-            "plateau": Key(NUMBER, "duration of the plateau [s]"),
-            "fall": Key(NUMBER, "duration of the falling ramp, 100 to 0 % [s]"),
+            "t_start": Key(NUMBER, "start of the pulse at the source [ms]", "time"),
+            "rise": Key(NUMBER, "duration of the rising ramp, 0 to 100 % [ms]", "time"),
+            "plateau": Key(NUMBER, "duration of the plateau [ms]", "time"),
+            "fall": Key(NUMBER, "duration of the falling ramp, 100 to 0 % [ms]", "time"),
             "ramp": Key(("linear", "cosine", "smoothstep7"),
                         "shape of the ramps: linear (C0), cosine (C1), smoothstep7 (C3)"),
         }),
     },
     "direct_impact": {
         "impact": Table("the input bar is the projectile", {
-            "velocity": Key(NUMBER, "initial velocity of the input bar towards the specimen [m/s]"),
-            "time": Key(NUMBER, "time of the first contact with the specimen [s]"),
+            "velocity": Key(NUMBER, "initial velocity of the input bar towards the specimen [mm/ms] (= m/s)",
+                            "velocity"),
+            "time": Key(NUMBER, "time of the first contact with the specimen [ms]", "time"),
         }),
     },
     "shtb": {
         "striker": Table("tube that slides over the input bar and hits the flange", {
-            "length": Key(NUMBER, "striker length [m]; the pulse lasts about 2 length / c0 of the striker"),
-            "velocity": Key(NUMBER, "initial velocity [m/s]; negative = towards the flange"),
-            "impact_time": Key(NUMBER, "time of the first contact with the flange [s]"),
+            "length": Key(NUMBER, "striker length [mm]; the pulse lasts about 2 length / c0 of the striker",
+                          "length"),
+            "velocity": Key(NUMBER, "initial velocity [mm/ms] (= m/s); negative = towards the flange", "velocity"),
+            "impact_time": Key(NUMBER, "time of the first contact with the flange [ms]", "time"),
             "bar_model": Key(("A", "B", "C"), "wave model of the striker (A, B or C, as for the bars)"),
             "material": _material("striker"),
         }),
         "flange": Table("rigid mass on the far end of the input bar; mass = rho pi diameter^2/4 length", {
-            "diameter": Key(NUMBER, "flange diameter [m]"),
-            "length": Key(NUMBER, "flange length [m]"),
-            "rho": Key(NUMBER, "density [kg/m^3]"),
+            "diameter": Key(NUMBER, "flange diameter [mm]", "length"),
+            "length": Key(NUMBER, "flange length [mm]", "length"),
+            "rho": Key(NUMBER, "density [kg/mm^3]", "density"),
         }),
     },
 }
@@ -936,7 +976,7 @@ FD_KEYS = {
     "n_cells": Key(INTEGER, "number of cells along the specimen"),
     "cfl": Key(NUMBER, "time step as a fraction of the CFL limit [-]"),
     "viscosity": Key(NUMBER, "linear artificial viscosity, for stability [-]"),
-    "rate_filter_time": Key(NUMBER, "time constant of the strain-rate filter, for stability [s]"),
+    "rate_filter_time": Key(NUMBER, "time constant of the strain-rate filter, for stability [ms]", "time"),
     "contact_tolerance": Key(NUMBER, "a closed face opens when its tension exceeds this times E A of the bar [-]"),
 }
 
@@ -978,8 +1018,43 @@ def _kind_text(kind) -> str:
     return " or ".join(f'"{k}"' for k in kind) if isinstance(kind, tuple) else kind
 
 
+def convert_case_from_si(cfg: dict) -> dict:
+    """A copy of a simulation case in SI units (m, s, kg; the case files of earlier versions) in the units of
+    this program, with the key ``units`` added. Each number is multiplied by the factor of its dimension in the
+    registry; the comments of a case file are not kept."""
+
+    def walk(d, spec):
+        out = {}
+        for k, v in d.items():
+            kind = spec.get(k)
+            if isinstance(v, dict) and isinstance(kind, Table):
+                out[k] = walk(v, kind)
+            elif isinstance(kind, Key) and kind.dim:
+                f = SI_FACTORS[kind.dim]
+                out[k] = [x * f for x in v] if isinstance(v, list) else v * f
+            else:
+                out[k] = copy.deepcopy(v)
+        return out
+
+    return {"units": UNITS, **walk({k: v for k, v in cfg.items() if k != "units"}, simulation_keys(cfg))}
+
+
+def check_units(cfg: dict, what: str = "case file") -> None:
+    """Refuse a case without the key ``units`` (SI units, of an earlier version) or with other units."""
+    if "units" not in cfg and what == "simulation settings file":
+        raise ValueError("the simulation settings file has no key 'units': it was written by an earlier version, in "
+                         "SI units (m, s, Pa); run the simulation again")
+    if "units" not in cfg:
+        raise ValueError(f"the {what} has no key 'units': it is in the SI units of an earlier version (m, s, Pa). "
+                         f"Convert its values to {UNITS_TEXT} (README, section \"Units\"; for a simulation case "
+                         f"convert_case_from_si does this) and add units = \"{UNITS}\"")
+    if cfg["units"] != UNITS:
+        raise ValueError(f"the {what} has units = {cfg['units']!r}; this program uses units = \"{UNITS}\"")
+
+
 def check_simulation_config(cfg: dict) -> None:
     """Raise ValueError naming every missing, unknown or wrongly typed key of a simulation case."""
+    check_units(cfg)
     check_renamed_keys(cfg)
     errors = []
 
@@ -1070,7 +1145,8 @@ class SHPBSimulation:
         if not self.v0:
             return np.zeros_like(t)
         # mid value at the impact instant, so the trapezoidal rule of the specimen starts the load at t_impact
-        h = np.where(np.isclose(t, self.t_impact, rtol=0.0, atol=1e-12), 0.5, (t > self.t_impact).astype(float))
+        at_impact = np.isclose(t, self.t_impact, rtol=0.0, atol=1e-9 * self.dt)
+        h = np.where(at_impact, 0.5, (t > self.t_impact).astype(float))
         return -self.v0 / (2 * self.mat1.c0) * h
 
     # ------------------------------------------------------------------ solve
@@ -1116,7 +1192,7 @@ class SHPBSimulation:
         """(right-going, left-going) strain at distance d from the interface on bar 1 or 2."""
         sp = self.sp
         if bar == 1:
-            if d > self.d_ref + 1e-12:
+            if d > self.d_ref * (1 + 1e-12):
                 raise ValueError("position beyond the source on the input bar")
             m, L = self.model1, self.L1
             right = propagate(sp, m, self.eps_ref, self.d_ref - d, gauge_length)
@@ -1390,7 +1466,7 @@ class TensionSimulation(SHPBSimulation):
         """(right-going, left-going) strain at distance d from the specimen face on bar 1 or 2."""
         if bar == 2:
             return super().strain_components(bar, d, gauge_length)
-        if d > self.L1 + 1e-12:
+        if d > self.L1 * (1 + 1e-12):
             raise ValueError("position beyond the loading end of the input bar")
         sp, m = self.sp, self.model1
         return propagate(sp, m, self.f, self.L1 - d, gauge_length), propagate(sp, m, self.b1, d, gauge_length)
@@ -1428,11 +1504,11 @@ SIGN_CONVENTION = ("global x from the input bar towards the output bar; displace
                    "in +x; strain, stress and force positive in tension (SHTB contact force: compression +); "
                    "gauge positions are distances from the respective bar-specimen interface into the bar")
 CSV_FMT = "%.12e"
-INTERFACE_KEYS = (("wave_in", ""), ("wave_out", ""), ("strain", ""), ("velocity", "m/s"),
-                  ("force_E", "N"), ("force_eff", "N"))
-SPECIMEN_UNITS = {"stress": "Pa", "strain_rate": "1/s", "force_face1": "N", "force_face2": "N",
-                  "velocity_face1": "m/s", "velocity_face2": "m/s", "contact_force": "N",
-                  "flange_velocity": "m/s"}
+INTERFACE_KEYS = (("wave_in", ""), ("wave_out", ""), ("strain", ""), ("velocity", "mm/ms"),
+                  ("force_E", "kN"), ("force_eff", "kN"))
+SPECIMEN_UNITS = {"stress": "GPa", "strain_rate": "1/ms", "force_face1": "kN", "force_face2": "kN",
+                  "velocity_face1": "mm/ms", "velocity_face2": "mm/ms", "contact_force": "kN",
+                  "flange_velocity": "mm/ms"}
 
 
 def _column(name: str, unit: str) -> str:
@@ -1462,7 +1538,7 @@ def _read_csv(path):
 def write_records_csv(case: dict, path, settings_name: str = "simulation.toml") -> None:
     """Gauge records (gauge-averaged, then at the gauge centre) and the interface truth of both bars."""
     ch, itf = case["channels"], case["interface"]
-    names, cols = ["t[s]"], [case["time"]]
+    names, cols = ["t[ms]"], [case["time"]]
     for key, suffix in (("records", ""), ("records_point", "_point")):
         for i, n in enumerate(ch["names"]):
             names.append(n + suffix); cols.append(ch[key][i])
@@ -1471,8 +1547,8 @@ def write_records_csv(case: dict, path, settings_name: str = "simulation.toml") 
             names.append(_column(f"{b}_{key}", unit)); cols.append(itf[b][key])
     comments = [
         FORMAT_VERSION,
-        f"case {case['name']}; settings in {settings_name}; sampling rate {case['sampling_rate']:g} Hz",
-        "units: SI (s, m, N, m/s); strain dimensionless",
+        f"case {case['name']}; settings in {settings_name}; sampling rate {case['sampling_rate']:g} 1/ms",
+        "units: " + UNITS_TEXT,
         "sign convention: " + SIGN_CONVENTION,
         "I1, I2, ...: input-bar gauges, O1, O2, ...: output-bar gauges (order as in [gauges] of the settings); "
         "without suffix: averaged over the gauge length if [gauges] averaging = true; _point: at the gauge centre",
@@ -1487,6 +1563,8 @@ def read_records_csv(path) -> dict:
     """Read a records file; returns name, time, sampling_rate, channels (names, bar, records, records_point)
     and interface ({bar1, bar2}: the INTERFACE_KEYS)."""
     comments, names, data = _read_csv(path)
+    if comments and comments[0] in OLD_FORMATS:
+        raise ValueError(f"{path}: {OLD_FORMATS[comments[0]]}; run the simulation again")
     if not comments or comments[0] != FORMAT_VERSION:
         raise ValueError(f"{path}: not a {FORMAT_VERSION} file (first line: {comments[:1]})")
     gauges = [n for n in names if n[:1] in "IO" and n[1:2].isdigit() and not n.endswith("_point")]
@@ -1512,18 +1590,18 @@ def read_records_csv(path) -> dict:
 
 def write_specimen_csv(case: dict, path, settings_name: str = "simulation.toml") -> None:
     """Specimen histories, the source wave and (SHTB) the loading end; not read by the analysis."""
-    names, cols = ["t[s]"], [case["time"]]
+    names, cols = ["t[ms]"], [case["time"]]
     for k, v in case["specimen"].items():
         names.append(_column(k, SPECIMEN_UNITS.get(k, ""))); cols.append(v)
     names.append("source_eps_ref"); cols.append(case["source"]["eps_ref"])
     comments = [
         FORMAT_VERSION + " (specimen)",
         f"case {case['name']}; settings in {settings_name}",
-        "units: SI (s, m, N, Pa, m/s); strain dimensionless",
+        "units: " + UNITS_TEXT,
         "sign convention: " + SIGN_CONVENTION,
         "specimen quantities as seen by the specimen model (engineering stress and strain); contact_open*: 1 "
-        "where a face (or, SHTB, the striker) is separated",
-        f"source_eps_ref: the right-going wave on the input bar at {case['source']['distance_from_interface']:g} m "
+        "where a face (or, SHTB, the striker) is separated; failed: 1 after the specimen has broken",
+        f"source_eps_ref: the right-going wave on the input bar at {case['source']['distance_from_interface']:g} mm "
         "from the interface (SHPB: prescribed pulse; direct impact: zero; SHTB: wave leaving the loading end)",
     ]
     _write_csv(path, comments, names, cols)
@@ -1580,7 +1658,7 @@ def write_settings_toml(cfg: dict, derived: dict, path) -> None:
     doc = _plain({**cfg, "derived": derived})
     text = (f"# Settings of the simulation case {cfg.get('name', '')}, written by hopkinson_simulator.py.\n"
             "# All keys except [derived] are the case file as read; [derived] holds quantities computed from it.\n"
-            "# SI units throughout.\n\n" + dump_toml(doc))
+            f"# Units: {UNITS_TEXT}.\n\n" + dump_toml(doc))
     if json.dumps(tomllib.loads(text), sort_keys=True) != json.dumps(doc, sort_keys=True):   # key order may differ
         raise RuntimeError("the TOML writer does not reproduce the settings")
     Path(path).write_text(text)
@@ -1597,7 +1675,7 @@ def load_config(path) -> dict:
 # Gnuplot 5 default line colours without the faint yellow: dark violet, green, sky blue, orange, blue, red.
 COLORS = ["#9400D3", "#009E73", "#56B4E9", "#E69F00", "#0072B2", "#E51E10"]
 INVALID = "#efefef"                  # shading of samples outside the valid window
-US, PM = 1e6, 1e3                    # s -> µs, strain -> ‰
+US, PM = 1e3, 1e3                    # ms -> µs, strain -> ‰
 
 
 def apply_style() -> None:
@@ -1638,7 +1716,7 @@ def plot_waves(case: dict, path):
         a = ax[0, col]
         for j, i in enumerate(np.flatnonzero(ch["bar"] == bar)):
             a.plot(t, ch["records"][i] * PM, lw=0.9, color=COLORS[j],
-                   label=f"{ch['names'][i]}: {ch['distance_from_interface'][i] * 1e3:.0f} mm from the specimen")
+                   label=f"{ch['names'][i]}: {ch['distance_from_interface'][i]:.0f} mm from the specimen")
         a.set(title=f"A) Gauge records, {title}", ylabel="strain [‰]")
         a = ax[1, col]
         w = itf[f"bar{bar}"]
@@ -1656,7 +1734,7 @@ def plot_waves(case: dict, path):
         a.set(title=f"B) True waves at the interface, {title}", xlabel="t [µs]", ylabel="strain [‰]")
         for a in ax[:, col]:
             a.legend(loc="best")
-    spc = f"specimen {cfg['specimen']['kind']} (Ls = {cfg['specimen']['length'] * 1e3:.0f} mm)"
+    spc = f"specimen {cfg['specimen']['kind']} (Ls = {cfg['specimen']['length']:g} mm)"
     if setup == "shtb":
         loading = f"tension, striker at {cfg['striker']['velocity']:g} m/s"
     elif impact:

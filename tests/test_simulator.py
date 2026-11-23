@@ -109,6 +109,37 @@ def test_shtb_elastic_specimen_is_a_spring():
     assert np.max(np.abs(b2 - a1)) / np.max(np.abs(a1)) > 0.1    # the spring changes the wave noticeably
 
 
+FD_OPTIONS = {"kind": "fd", "n_cells": 40, "cfl": 0.5, "viscosity": 0.3, "rate_filter_time": 0.5e-6,
+              "contact_tolerance": 1e-6}
+
+
+@pytest.mark.parametrize("kind", ["lumped", "fd"])
+def test_shtb_brittle_failure(kind):
+    """An elastic specimen with a failure stress below its peak stress (model A, before any echo): up to
+    failure it follows the elastic specimen; once the stress reaches the failure stress it carries no force,
+    so the output bar receives nothing and the input bar reflects the incident wave as from a free end
+    (b1 = -a1)."""
+    base = variant(SHTB, bar_model="A", striker={"bar_model": "A"}, sampling={"duration": 1400e-6},
+                   specimen={"material": ELASTIC, **(FD_OPTIONS if kind == "fd" else {})})
+    ref, _ = generate(base)
+    sig_ref = ref["specimen"]["stress"]
+    sf = 0.6 * sig_ref.max()
+    case, _ = generate(variant(base, specimen={"material": {"failure_stress": sf}}))
+    sp, t = case["specimen"], case["time"]
+    i_f = int(np.argmax(sp["failed"] > 0))
+    assert sp["failed"][-1] == 1 and np.all(sp["failed"][i_f:] == 1)
+    assert sig_ref[i_f - 1] < sf * (1 + 1e-3) and sig_ref[i_f] > sf * (1 - 1e-2)   # fails where the elastic stress reaches sf
+    before = slice(0, i_f - 1)
+    assert np.max(np.abs(sp["stress"][before] - sig_ref[before])) < 1e-5 * sf    # spectral round-off only
+    assert np.max(sp["stress"]) <= sf * (1 + 1e-12)
+    after = t > t[i_f] + (5e-6 if kind == "fd" else 0.0)            # fd: the broken halves still ring briefly
+    N = np.abs(sp["force_face1"][after]) + np.abs(sp["force_face2"][after])
+    tol = 1e-12 if kind == "lumped" else 2e-2
+    assert np.max(N) < tol * np.max(sp["force_face1"])
+    a1, b1 = case["interface"]["bar1"]["wave_in"], case["interface"]["bar1"]["wave_out"]
+    assert np.max(np.abs(b1[after] + a1[after])) < tol * np.max(np.abs(a1))
+
+
 def test_former_key_names_are_refused():
     old = variant(SHPB, gauges={"incident": [0.3, 0.85]})
     with pytest.raises(ValueError, match=r"gauges.incident -> gauges.input"):

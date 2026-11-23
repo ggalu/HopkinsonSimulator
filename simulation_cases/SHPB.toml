@@ -74,6 +74,7 @@ C = 0.015                        # Johnson-Cook rate sensitivity: sigma_y *= 1 +
 edot0 = 1.0                      # reference strain rate [1/s]
 rate_dependent = true            # false: rate-independent plasticity
 tension_cutoff = true            # true: interfaces cannot carry tension (unilateral contact)
+failure_stress = inf             # tensile failure stress [Pa]; inf: no failure
 
 # ---------------------------------------------------------------- time axis and solver
 [sampling]

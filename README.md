@@ -21,8 +21,9 @@ its figures and the numbers it quotes.
 ```
 hopkinson_simulator.py   bar models, propagation, pulses, specimens, the three setups, output files, figure
 bussac_analysis.py       analysis case check, comparison of settings, Bussac separation, errors, figure
-simulation_cases/        SHPB.toml, direct_impact.toml, direct_impact_viscoelastic.toml, SHTB.toml
-analysis_cases/          the same four names
+simulation_cases/        SHPB.toml, direct_impact.toml, direct_impact_viscoelastic.toml, SHTB.toml,
+                         SHTB_steel_brittle.toml, SHTB_alu_brittle.toml
+analysis_cases/          the same six names
 tests/                   pytest tests of both programs
 reports/theory/          report on the methods (LaTeX) and the script of its figures
 reports/template/        LaTeX style of the reports
@@ -37,7 +38,7 @@ python hopkinson_simulator.py simulation_cases/SHPB.toml          # -> results/S
 python bussac_analysis.py analysis_cases/SHPB.toml                # -> results/SHPB_bussac/
 python hopkinson_simulator.py simulation_cases/*.toml --headless  # all cases, figures saved but not shown
 python bussac_analysis.py analysis_cases/*.toml --headless
-python -m pytest -q                                               # 52 tests, about 50 s
+python -m pytest -q                                               # 58 tests, about 100 s
 ```
 On start, the simulator checks each case file (see "Simulation case file") and prints its settings as a framed
 table: one row per key with its value and a short comment on its role, and one group of rows per table of the
@@ -101,6 +102,15 @@ an elastic–plastic law with linear hardening and an optional logarithmic strai
 engineering stress and strain. In the pressure setups the specimen faces are in unilateral contact with the
 bars by default (`tension_cutoff = true`): a face separates instead of carrying tension.
 
+Both specimen models have an optional brittle failure in tension, set by `failure_stress` in
+`[specimen.material]` (`inf` for no failure). The lumped specimen breaks in the substep in which its stress
+reaches the failure stress, and from then on it carries no force, in tension or in compression, for the rest
+of the record. The bars then see two free ends. In the finite-difference specimen each cell that reaches the
+failure stress carries no stress from then on, so the specimen separates at that cell. The column `failed` of
+`specimen.csv` is 1 after the failure. Failure is checked by a test with model A in the SHTB: up to failure
+the stress is that of the specimen without failure, and after failure the input bar reflects the incident
+wave as from a free end and the output bar receives nothing.
+
 ### The three setups
 - **SHPB** (`setup = "shpb"`). The incident strain pulse is prescribed at a source position on the input bar
   (a trapezoid with smooth ramps; the example uses a sharp rise of 4 µs, which excites strong dispersion).
@@ -127,7 +137,50 @@ massless spring of compliance C = Ls/(Es As), with T(ω) = 1/(1 + iωZC/2).
 In the example (`simulation_cases/SHTB.toml`) a POM striker of 0.8 m at 5 m/s produces an incident strain of
 about 4.3·10⁻⁴ for about 1.1 ms. The specimen (10 mm × Ø4 mm, an annealed aluminium) yields; its strain rate is
 about 260 /s, and its plastic strain reaches about 0.43 at the end of the 2 ms record. The specimen dimensions
-and the striker material are assumptions. The specimen model has no necking or failure.
+and the striker material are assumptions. The specimen model has no necking, and this case uses no failure.
+
+A second example, `simulation_cases/SHTB_steel_brittle.toml`, keeps the POM striker and the flange of the first
+but has steel bars (E = 210 GPa, ρ = 7850 kg/m³, ν = 0.29, the same 16 mm diameter) and a linear elastic,
+brittle specimen: E = 80 GPa, a round cross-section of 10 mm², a parallel gauge length of 15 mm and a failure
+stress of 1 GPa, so that it breaks at 10 kN. Only the parallel section is modelled, and the shoulders are taken
+as rigid. The steel bars have 2.7 times the impedance of the aluminium bars, so the same striker produces a
+smaller strain in them. At the 5 m/s of the first case the incident strain is 2.0·10⁻⁴ and the specimen stress
+reaches only 860 MPa, so the specimen does not break. The case therefore uses 8 m/s, which gives an incident
+strain of about 3.3·10⁻⁴ (13.8 kN). The specimen then breaks at 0.66 ms, about 0.12 ms after the incident wave
+arrives, during the rise of the transmitted force; its strain rate before failure is about 140 /s. After failure
+the input bar reflects the rest of the incident pulse with the opposite sign, and the transmitted pulse ends in
+a step.
+
+The specimen of this case uses the finite-difference model with 40 cells. A run with the lumped model gives the
+same failure time (663.2 µs) and the same peak force to within 0.1 %. The finite-difference model shows a force
+imbalance between the two faces of up to 4.8 % while the load rises, and less than 0.1 % shortly before failure.
+At failure the stress along the specimen is nearly uniform, and all cells have the same failure stress.
+Therefore 38 of the 40 cells reach the failure stress within 0.12 µs, which is faster than the unloading wave
+from the first broken cell can travel (one cell in 0.07 µs). Both face forces then fall to zero within 0.4 µs,
+as in the lumped model. A specimen with one weakest section would instead unload over the 2.7 µs that a wave
+needs to cross it; the model has no such variation of strength along the specimen.
+
+The case `simulation_cases/SHTB_alu_brittle.toml` is the twin of this case with Al 7075 bars (E = 71.7 GPa,
+ρ = 2810 kg/m³, ν = 0.33); all other settings are the same. The aluminium bars have about one third of the
+impedance of the steel bars (2854 kg/s against 8163 kg/s), so the same striker at 8 m/s produces an incident
+force of only 9.9 kN instead of 13.8 kN. The specimen behaves as a stiff spring, and its force cannot exceed
+the incident force by much, so its stress peaks at 988 MPa and it does not break. A run at 11.1 m/s, which
+gives the incident force of the steel case, breaks the specimen at 639 µs. In that run the transmitted strain
+before failure is 6.9·10⁻⁴, against 2.4·10⁻⁴ with steel bars, because the strain for a given force is inversely
+proportional to E. The specimen is loaded faster (10–90 % force rise in 59 µs against 85 µs, strain rate
+200 /s against 140 /s), and the face forces differ by up to 9.6 % during the rise, against 4.8 %; within the
+30 µs before failure they differ by less than 0.2 % in both runs. With both bar materials, the specimen strain
+from the separated velocities agrees with the truth to 0.1 % up to 1 µs before failure. The specimen stress
+from the separated output-bar force is within 2.5 % of the truth from 5 µs before failure and earlier, but it
+overshoots to about 1080 MPa (8 %) in the last 1–2 µs, because the band-limited separation rings at the step
+of the failure. These numbers come from single noise-free runs; with measured records the larger strain of the
+aluminium bars gives a 2.9 times larger signal for the same force.
+
+The Bussac analysis of this case gives a largest relative error of the separated waves of 0.30 (relative to the
+peak incident wave), because the force drops from 10 kN to zero within one sample (0.2 µs). A separation that
+is band-limited to 401 kHz cannot reproduce this step, so the error is concentrated within about 25 µs of the
+failure. Outside the interval from 640 to 690 µs, the largest error of the outgoing waves is 3.7·10⁻³ and
+that of the incoming waves 4·10⁻⁵. These numbers rest on a single noise-free run.
 
 ## Simulation case file
 One self-contained, commented TOML file per case. The tables are: `[bars]` (with the bar lengths
@@ -184,6 +237,7 @@ The gauge positions and the gauge length are not in this file. They are settings
 |---|---|
 | `stress[Pa]`, `strain`, `strain_rate[1/s]`, `plastic_strain` | specimen model output (engineering, tension +) |
 | `force_face{1,2}[N]`, `velocity_face{1,2}[m/s]`, `contact_open_face{1,2}` | forces and velocities as seen by the specimen model; 1 where a face is separated from its bar |
+| `failed` | 1 after the specimen has broken (see `failure_stress`), 0 before |
 | `contact_force[N]`, `flange_velocity[m/s]`, `striker_wave_out`, `striker_wave_in`, `contact_open` | SHTB only: the loading end (contact force compression +; 1 where the striker is separated from the flange) |
 | `source_eps_ref` | the right-going wave where it is defined: the prescribed pulse (SHPB), zero (direct impact), the wave leaving the loading end (SHTB) |
 
@@ -288,7 +342,7 @@ right τ agrees to 10⁻⁵ or better (test below). These numbers rest on single
 ## Tests
 `tests/test_simulator.py` compares the simulator with closed-form solutions for model A (d'Alembert solution
 with an elastic specimen, direct impact, the loading end of the SHTB, and the bonded elastic specimen of the SHTB
-as a spring), checks the Love dispersion relation, the Love equation of motion and the phase and group velocity
+as a spring), checks the brittle failure of the lumped and the finite-difference specimen, checks the Love dispersion relation, the Love equation of motion and the phase and group velocity
 of a tone burst, checks the Pochhammer–Chree solver against published values and its limits, and checks that
 the gauge records stored in a file are the propagations of the stored interface waves.
 `tests/test_bussac.py` checks that the separation is exact for model A (SHPB and SHTB) and for model C with the

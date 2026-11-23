@@ -505,6 +505,8 @@ class SpecimenMaterial:
     (tangent modulus E_t = E H / (E + H)).
     tension_cutoff: the specimen-bar contact cannot transmit tension (sigma <= 0);
     a positive trial stress means the faces separate (gap), sigma = 0.
+    failure_stress: brittle tensile failure; once the tensile stress reaches it, the specimen (lumped) or the
+    cell (fd) carries no stress for the rest of the record, in tension and in compression. inf: no failure.
     """
     E: float = 69.0e9
     rho: float = 2710.0
@@ -514,6 +516,7 @@ class SpecimenMaterial:
     edot0: float = 1.0
     rate_dependent: bool = True
     tension_cutoff: bool = True
+    failure_stress: float = np.inf
 
     def yield_stress(self, alpha, edot_abs):
         Y = self.sigma0 + self.H * alpha
@@ -558,7 +561,8 @@ class LumpedSpecimen:
         P = 2.0 * (c1 * np.asarray(a1) + c2 * np.asarray(a2))
         n = P.size
         sig = np.zeros(n); e = np.zeros(n); ep = np.zeros(n); alp = np.zeros(n)
-        opened = np.zeros(n)
+        opened = np.zeros(n); failed = np.zeros(n)
+        broken = False
         D = dt * Q / (2 * Ls)
         s_n = e_n = ep_n = al_n = 0.0
         P_n = P[0]
@@ -566,7 +570,9 @@ class LumpedSpecimen:
             P1 = P[i]
             B = e_n + dt / (2 * Ls) * (P_n - Q * s_n + P1)
             s_tr = Es * (B - ep_n) / (1.0 + Es * D)
-            if m.tension_cutoff and s_tr >= 0.0:
+            if broken:
+                s1, e1, ep1, al1 = 0.0, B, ep_n, al_n     # separated halves: no force
+            elif m.tension_cutoff and s_tr >= 0.0:
                 s1, e1, ep1, al1 = 0.0, B, ep_n, al_n
                 opened[i] = float(s_tr > 1e-6 * Es)   # diagnostic flag: gap ~ Ls*(e - ep) > 1e-6 Ls
             else:
@@ -589,6 +595,11 @@ class LumpedSpecimen:
                     dal = sgn * ((e1 - ep_n) - s1 / Es)
                     ep1 = ep_n + sgn * dal
                     al1 = al_n + dal
+                if s1 >= m.failure_stress:
+                    # brittle failure within this step: the stress drops to zero from here on
+                    broken = True
+                    s1, e1 = 0.0, B
+            failed[i] = float(broken)
             sig[i], e[i], ep[i], alp[i] = s1, e1, ep1, al1
             s_n, e_n, ep_n, al_n, P_n = s1, e1, ep1, al1, P1
         N = As * sig
@@ -602,6 +613,7 @@ class LumpedSpecimen:
             "velocity_face1": c1 * (-np.asarray(a1) + b1),
             "velocity_face2": c2 * (np.asarray(a2) - b2),
             "contact_open_face1": opened, "contact_open_face2": opened,
+            "failed": failed,
         }
 
 
@@ -670,7 +682,9 @@ class FDSpecimen:
         n = a1.size
         v = np.zeros(nc + 1); sig = np.zeros(nc); e = np.zeros(nc); ep = np.zeros(nc); alp = np.zeros(nc)
         gap1 = gap2 = 0.0          # face separations (>= 0), only with tension_cutoff
-        keys = ("N1", "N2", "v0", "vn", "vb1", "vb2", "stress", "strain", "plastic_strain", "open1", "open2")
+        keys = ("N1", "N2", "v0", "vn", "vb1", "vb2", "stress", "strain", "plastic_strain", "open1", "open2",
+                "failed")
+        broken = np.zeros(nc, dtype=bool)   # cells that have failed (carry no stress)
         out = {k: np.zeros(n) for k in keys}
         rate_C = m.C if m.rate_dependent else 0.0
         qcoef = self.viscosity * m.rho * self.cs * dx
@@ -713,7 +727,7 @@ class FDSpecimen:
             # symmetric elastic-plastic return mapping (material carries tension)
             edot = de / dt
             rate_f += kf * (np.abs(edot) - rate_f)
-            q = qcoef * edot
+            q = np.where(broken, 0.0, qcoef * edot)
             s_tr = Es * (e - ep)
             Y = m.yield_stress(alp, rate_f)
             rate_fac = 1.0 + rate_C * np.log(np.maximum(rate_f / m.edot0, 1.0))
@@ -721,6 +735,9 @@ class FDSpecimen:
             ep = ep + np.sign(s_tr) * dal
             alp = alp + dal
             sig = Es * (e - ep)
+            broken |= sig >= m.failure_stress
+            sig[broken] = 0.0
+            out["failed"][i] = float(broken.any())
             out["N1"][i], out["N2"][i] = N1, N2
             out["v0"][i], out["vn"][i] = v[0], v[-1]
             out["vb1"][i], out["vb2"][i] = vb1, vb2
@@ -737,6 +754,7 @@ class FDSpecimen:
             "force_face1": out["N1"], "force_face2": out["N2"],
             "velocity_face1": out["vb1"], "velocity_face2": out["vb2"],
             "contact_open_face1": out["open1"], "contact_open_face2": out["open2"],
+            "failed": out["failed"],
         }
 
 
@@ -869,7 +887,7 @@ SIMULATION_KEYS = Table("", {
                                       "wave propagation"),
         "length": Key(NUMBER, "specimen length [m]"),
         "diameter": Key(NUMBER, "specimen diameter [m]"),
-        "material": Table("elastic-plastic law with linear hardening, engineering stress and strain", {
+        "material": Table("elastic-plastic law with linear hardening and optional brittle failure, engineering stress and strain", {
             "E": Key(NUMBER, "Young's modulus [Pa]"),
             "rho": Key(NUMBER, "density [kg/m^3]; used only by kind = \"fd\""),
             "sigma0": Key(NUMBER, "initial yield stress [Pa]"),
@@ -880,6 +898,8 @@ SIMULATION_KEYS = Table("", {
                                         "are not used"),
             "tension_cutoff": Key(FLAG, "true: a face separates instead of carrying tension; false: bonded "
                                         "(shtb)"),
+            "failure_stress": Key(NUMBER, "tensile stress at which the specimen breaks and then carries no "
+                                          "force [Pa]; inf: no failure"),
         }),
     }),
     "sampling": Table("time axis of the records and of the solver", {
@@ -1522,7 +1542,7 @@ def write_specimen_csv(case: dict, path, settings_name: str = "simulation.toml")
         "units: SI (s, m, N, Pa, m/s); strain dimensionless",
         "sign convention: " + SIGN_CONVENTION,
         "specimen quantities as seen by the specimen model (engineering stress and strain); contact_open*: 1 "
-        "where a face (or, SHTB, the striker) is separated",
+        "where a face (or, SHTB, the striker) is separated; failed: 1 after the specimen has broken",
         f"source_eps_ref: the right-going wave on the input bar at {case['source']['distance_from_interface']:g} m "
         "from the interface (SHPB: prescribed pulse; direct impact: zero; SHTB: wave leaving the loading end)",
     ]

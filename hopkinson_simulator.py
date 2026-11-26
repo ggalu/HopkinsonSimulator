@@ -7,7 +7,8 @@ program prints each setting with a comment on its role. Each case writes to <out
     simulation.toml  the case settings as read, and a [derived] table computed from them
     simulation.csv   gauge records and the true interface waves (the file the analysis reads)
     specimen.csv     specimen histories, the source wave and (SHTB) the loading end
-    waves.png        gauge records and true interface waves (left: input bar, right: output bar)
+    waves.png        gauge records and true interface waves as forces A E strain [kN] (left: input bar,
+                     right: output bar)
 
 Three setups (``setup`` in the case file):
     "shpb"           split Hopkinson pressure bar; the incident strain pulse is prescribed at a source position
@@ -509,6 +510,9 @@ class SpecimenMaterial:
     a positive trial stress means the faces separate (gap), sigma = 0.
     failure_stress: brittle tensile failure; once the tensile stress reaches it, the specimen (lumped) or the
     cell (fd) carries no stress for the rest of the record, in tension and in compression. inf: no failure.
+    failure_shortening: failure in compression; once the shortening of the specimen (Ls times the negative
+    mean engineering strain, the approach of its two faces) reaches it [mm], the whole specimen carries no
+    stress for the rest of the record, as after a tensile failure. inf: no failure.
     """
     E: float = 69.0             # [GPa]
     rho: float = 2.71e-6        # [kg/mm^3]
@@ -519,6 +523,7 @@ class SpecimenMaterial:
     rate_dependent: bool = True
     tension_cutoff: bool = True
     failure_stress: float = np.inf
+    failure_shortening: float = np.inf  # [mm]
 
     def yield_stress(self, alpha, edot_abs):
         Y = self.sigma0 + self.H * alpha
@@ -597,8 +602,9 @@ class LumpedSpecimen:
                     dal = sgn * ((e1 - ep_n) - s1 / Es)
                     ep1 = ep_n + sgn * dal
                     al1 = al_n + dal
-                if s1 >= m.failure_stress:
-                    # brittle failure within this step: the stress drops to zero from here on
+                if s1 >= m.failure_stress or -e1 * Ls >= m.failure_shortening:
+                    # failure within this step (tensile stress or compressive shortening reached):
+                    # the stress drops to zero from here on
                     broken = True
                     s1, e1 = 0.0, B
             failed[i] = float(broken)
@@ -738,6 +744,8 @@ class FDSpecimen:
             alp = alp + dal
             sig = Es * (e - ep)
             broken |= sig >= m.failure_stress
+            if -self.Ls * e.mean() >= m.failure_shortening:     # compressive failure of the whole specimen
+                broken[:] = True
             sig[broken] = 0.0
             out["failed"][i] = float(broken.any())
             out["N1"][i], out["N2"][i] = N1, N2
@@ -918,6 +926,9 @@ SIMULATION_KEYS = Table("", {
                                         "(shtb)"),
             "failure_stress": Key(NUMBER, "tensile stress at which the specimen breaks and then carries no "
                                           "force [GPa]; inf: no failure", "stress"),
+            "failure_shortening": Key(NUMBER, "compressive shortening of the specimen (approach of its faces) "
+                                              "at which it breaks and then carries no force [mm]; inf: no "
+                                              "failure", "length"),
         }),
     }),
     "sampling": Table("time axis of the records and of the solver", {
@@ -1704,34 +1715,37 @@ def _shade_open(ax, t, flag):
 
 def plot_waves(case: dict, path):
     """Simulation overview, saved to ``path``; returns the (open) figure. Left column input bar, right column
-    output bar. Row 1: gauge records. Row 2: true interface waves; grey: specimen face separated from the bar."""
+    output bar. Row 1: gauge records. Row 2: true interface waves; grey: specimen face separated from the bar.
+    Every strain is drawn as the force A E strain [kN] of its bar."""
     import matplotlib.pyplot as plt
     t = case["time"] * US
     ch, itf, sp = case["channels"], case["interface"], case["specimen"]
     cfg = case["config"]
     setup = cfg["setup"]
     impact = setup == "direct_impact"
+    mats = {1: BarMaterial(**cfg["bars"]["material_input"]), 2: BarMaterial(**cfg["bars"]["material_output"])}
+    EA = {b: m.E * m.area for b, m in mats.items()}      # axial stiffness [kN]: strain -> force
     fig, ax = plt.subplots(2, 2, figsize=(14, 8), sharex=True, sharey="row" if not impact else False)
     for col, bar, title in ((0, 1, "input bar"), (1, 2, "output bar")):
         a = ax[0, col]
         for j, i in enumerate(np.flatnonzero(ch["bar"] == bar)):
-            a.plot(t, ch["records"][i] * PM, lw=0.9, color=COLORS[j],
+            a.plot(t, ch["records"][i] * EA[bar], lw=0.9, color=COLORS[j],
                    label=f"{ch['names'][i]}: {ch['distance_from_interface'][i]:.0f} mm from the specimen")
-        a.set(title=f"A) Gauge records, {title}", ylabel="strain [‰]")
+        a.set(title=f"A) Gauge records, {title}", ylabel="force A·E·ε [kN]")
         a = ax[1, col]
         w = itf[f"bar{bar}"]
         if bar == 1 and impact:
-            a.plot(t, w["wave_out"] * PM, lw=1.0, color=COLORS[0], label="impact wave (← from specimen)")
-            a.plot(t, w["wave_in"] * PM, lw=1.0, color=COLORS[1], label="far-end echo (→ toward specimen)")
+            a.plot(t, w["wave_out"] * EA[bar], lw=1.0, color=COLORS[0], label="impact wave (← from specimen)")
+            a.plot(t, w["wave_in"] * EA[bar], lw=1.0, color=COLORS[1], label="far-end echo (→ toward specimen)")
         elif bar == 1:
-            a.plot(t, w["wave_in"] * PM, lw=1.0, color=COLORS[0], label="incident (→ specimen)")
-            a.plot(t, w["wave_out"] * PM, lw=1.0, color=COLORS[1], label="reflected (← from specimen)")
+            a.plot(t, w["wave_in"] * EA[bar], lw=1.0, color=COLORS[0], label="incident (→ specimen)")
+            a.plot(t, w["wave_out"] * EA[bar], lw=1.0, color=COLORS[1], label="reflected (← from specimen)")
         else:
-            a.plot(t, w["wave_out"] * PM, lw=1.0, color=COLORS[2], label="transmitted (→ from specimen)")
-            a.plot(t, w["wave_in"] * PM, lw=1.0, color=COLORS[3], label="far-end echo (← toward specimen)")
+            a.plot(t, w["wave_out"] * EA[bar], lw=1.0, color=COLORS[2], label="transmitted (→ from specimen)")
+            a.plot(t, w["wave_in"] * EA[bar], lw=1.0, color=COLORS[3], label="far-end echo (← toward specimen)")
         if f"contact_open_face{bar}" in sp and np.any(sp[f"contact_open_face{bar}"] > 0):
             _shade_open(a, t, sp[f"contact_open_face{bar}"])
-        a.set(title=f"B) True waves at the interface, {title}", xlabel="t [µs]", ylabel="strain [‰]")
+        a.set(title=f"B) True waves at the interface, {title}", xlabel="t [µs]", ylabel="force A·E·ε [kN]")
         for a in ax[:, col]:
             a.legend(loc="best")
     spc = f"specimen {cfg['specimen']['kind']} (Ls = {cfg['specimen']['length']:g} mm)"

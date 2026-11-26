@@ -22,8 +22,9 @@ its figures and the numbers it quotes.
 hopkinson_simulator.py   bar models, propagation, pulses, specimens, the three setups, output files, figure
 bussac_analysis.py       analysis case check, comparison of settings, Bussac separation, errors, figure
 simulation_cases/        SHPB.toml, direct_impact.toml, direct_impact_viscoelastic.toml, SHTB.toml,
-                         SHTB_steel_brittle.toml, SHTB_alu_brittle.toml
-analysis_cases/          the same six names
+                         SHTB_steel_brittle.toml, SHTB_alu_brittle.toml, ESRF_alu.toml, ESRF_alu_specimen.toml,
+                         ESRF_steel_specimen.toml
+analysis_cases/          the first six names (the ESRF cases have one gauge per bar and no analysis case)
 tests/                   pytest tests of both programs
 reports/theory/          report on the methods (LaTeX) and the script of its figures
 reports/template/        LaTeX style of the reports
@@ -38,7 +39,7 @@ python hopkinson_simulator.py simulation_cases/SHPB.toml          # -> results/S
 python bussac_analysis.py analysis_cases/SHPB.toml                # -> results/SHPB_bussac/
 python hopkinson_simulator.py simulation_cases/*.toml --headless  # all cases, figures saved but not shown
 python bussac_analysis.py analysis_cases/*.toml --headless
-python -m pytest -q                                               # 62 tests, about 100 s
+python -m pytest -q                                               # 68 tests, about 4 min
 ```
 On start, the simulator checks each case file (see "Simulation case file") and prints its settings as a framed
 table: one row per key with its value and a short comment on its role, and one group of rows per table of the
@@ -49,7 +50,7 @@ then prints "Performing simulation, standby ..." and starts the coupling iterati
 
 | program | output in `results/<name>/` |
 |---|---|
-| simulator | `simulation.toml` (settings), `simulation.csv` (gauge records and interface truth), `specimen.csv` (specimen, source and loading-end histories), `waves.png` (gauge records and true interface waves) |
+| simulator | `simulation.toml` (settings), `simulation.csv` (gauge records and interface truth), `specimen.csv` (specimen, source and loading-end histories), `waves.png` (gauge records and true interface waves, drawn as forces A·E·ε in kN) |
 | analysis | `bussac.json` (analysis case, comparison with the simulation settings, end of the valid window `t_valid_end_ms`, errors, force imbalance), `bussac.png` (records, separated waves, force and velocity against the truth), `equilibrium.png` (forces at the two interfaces and their imbalance), `separated.txt` (time in ms and the separated quantities of both bars, forces in kN, velocities in mm/ms) |
 
 ## How the simulator works
@@ -110,6 +111,14 @@ failure stress carries no stress from then on, so the specimen separates at that
 `specimen.csv` is 1 after the failure. Failure is checked by a test with model A in the SHTB: up to failure
 the stress is that of the specimen without failure, and after failure the input bar reflects the incident
 wave as from a free end and the output bar receives nothing.
+
+Both specimen models also have an optional failure in compression, set by `failure_shortening` in
+`[specimen.material]` (`inf` for no failure). The shortening is the approach of the two specimen faces,
+Ls times the negative mean engineering strain. When the shortening reaches the given value, the whole specimen
+breaks in that substep, in the lumped and in the finite-difference model alike, and from then on it carries no
+force, as after a tensile failure. The criterion is a displacement and not a stress, because a ductile specimen
+can carry a constant force while it is compressed. It is checked by a test with model A in the SHPB, in the
+same way as the tensile failure.
 
 ### The three setups
 - **SHPB** (`setup = "shpb"`). The incident strain pulse is prescribed at a source position on the input bar

@@ -77,6 +77,7 @@ edot0 = 1.0e-3                   # reference strain rate [1/ms]
 rate_dependent = true            # false: rate-independent plasticity
 tension_cutoff = true            # true: interfaces cannot carry tension (unilateral contact)
 failure_stress = inf             # tensile failure stress [GPa]; inf: no failure
+failure_shortening = inf         # compressive failure shortening [mm]; inf: no failure
 
 # ---------------------------------------------------------------- time axis and solver
 [sampling]

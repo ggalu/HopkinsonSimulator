@@ -140,6 +140,33 @@ def test_shtb_brittle_failure(kind):
     assert np.max(np.abs(b1[after] + a1[after])) < tol * np.max(np.abs(a1))
 
 
+@pytest.mark.parametrize("kind", ["lumped", "fd"])
+def test_shpb_compressive_failure(kind):
+    """An elastic-plastic specimen with a failure shortening below its peak shortening (model A, before any
+    echo): up to failure it follows the specimen without failure; once its shortening Ls (-strain) reaches the
+    failure shortening it carries no force, so the input bar reflects the incident wave as from a free end."""
+    base = variant(SHPB, bar_model="A", sampling={"duration": 0.7},
+                   specimen=FD_OPTIONS if kind == "fd" else {})
+    ref, sim = generate(base)
+    Ls = sim.specimen.Ls
+    u_ref = -Ls * ref["specimen"]["strain"]
+    uf = 0.6 * u_ref.max()
+    case, _ = generate(variant(base, specimen={"material": {"failure_shortening": uf}}))
+    sp, t = case["specimen"], case["time"]
+    i_f = int(np.argmax(sp["failed"] > 0))
+    assert sp["failed"][-1] == 1 and np.all(sp["failed"][i_f:] == 1)
+    assert u_ref[i_f - 1] < uf and u_ref[i_f] > uf * (1 - 1e-2)      # fails where the shortening reaches uf
+    before = slice(0, i_f - 1)
+    assert np.max(np.abs(sp["stress"][before] - ref["specimen"]["stress"][before])) \
+        < 1e-5 * np.max(np.abs(ref["specimen"]["stress"]))
+    after = t > t[i_f] + (5e-3 if kind == "fd" else 0.0)            # fd: the broken halves still ring briefly
+    N = np.abs(sp["force_face1"][after]) + np.abs(sp["force_face2"][after])
+    tol = 1e-12 if kind == "lumped" else 2e-2
+    assert np.max(N) < tol * np.max(np.abs(sp["force_face1"]))
+    a1, b1 = case["interface"]["bar1"]["wave_in"], case["interface"]["bar1"]["wave_out"]
+    assert np.max(np.abs(b1[after] + a1[after])) < tol * np.max(np.abs(a1))
+
+
 def test_former_key_names_are_refused():
     old = variant(SHPB, gauges={"incident": [300.0, 850.0]})
     with pytest.raises(ValueError, match=r"gauges.incident -> gauges.input"):

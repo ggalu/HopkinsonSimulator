@@ -76,6 +76,7 @@ edot0 = 1.0e-3                   # reference strain rate [1/ms]; not used here
 rate_dependent = false           # true: sigma_y *= 1 + C ln(edot/edot0); false: C and edot0 are not used
 tension_cutoff = true            # true: interfaces cannot carry tension (unilateral contact)
 failure_stress = inf             # tensile failure stress [GPa]; inf: no failure
+failure_shortening = inf         # compressive failure shortening [mm]; inf: no failure
 
 # ---------------------------------------------------------------- time axis and solver
 [sampling]

@@ -103,6 +103,7 @@ edot0 = 1.0e-3                   # reference strain rate [1/ms]; not used (rate_
 rate_dependent = false           # false: rate-independent
 tension_cutoff = false           # must be false: the specimen is bonded to the bars and carries tension
 failure_stress = 1.0             # tensile failure stress [GPa]; after failure the specimen carries no force
+failure_shortening = inf         # compressive failure shortening [mm]; inf: no failure
 
 # ---------------------------------------------------------------- time axis and solver
 [sampling]

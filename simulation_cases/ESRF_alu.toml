@@ -1,0 +1,106 @@
+# Case ESRF_alu: classic split Hopkinson pressure bar with aluminium bars of 12.7 mm diameter, a striker of
+# 250 mm at 15 m/s, and a shot without specimen (the input bar is pressed directly against the output bar).
+# Love rod (dispersive), lumped "specimen" that stands in for the direct bar-bar contact.
+#
+# Run (results in results/<name>/):
+#   python hopkinson_simulator.py simulation_cases/ESRF_alu.toml
+# Units: mm, ms, kg; so force in kN, stress in GPa, velocity in mm/ms (= m/s), density in kg/mm^3 and
+# frequency in 1/ms (= kHz). Strain is dimensionless, tension positive.
+# Every key below is required and no other key is accepted; the program lists all wrong keys at once.
+# Distances along a bar are measured from the bar-specimen interface into the bar.
+#
+# Striker. The setup "shpb" has no striker model; the striker impact is replaced by the incident pulse that it
+# produces at the impact end of the input bar. A striker of the bar material and diameter, at velocity v,
+# produces in the 1D theory a compressive strain v/(2 c0) that lasts 2 Ls/c0. With c0 = sqrt(E/rho) =
+# 5051.3 mm/ms for the Al 7075 values below, v = 15 mm/ms and Ls = 250 mm, the amplitude is -1.4848e-3 and the
+# duration is 0.09898 ms. The ramps are symmetric, so the duration between the 50 % points is
+# plateau + (rise + fall)/2 = 0.09498 + 0.004 = 0.09898 ms. The rise and fall times of 4 us are an assumption
+# (a flat striker face on a flat bar end); the striker material is assumed equal to the bar material.
+#
+# No specimen. The program has no option for bars in direct contact, so a very thin lumped elastic disc of the
+# bar material and diameter is placed between the bars. Its length of 0.001 mm gives a compliance
+# C = Ls/(E A) = 1.1e-7 mm/kN, and the transmission 1/(1 + i w Z C/2) differs from 1 by less than 3.1e-4 up to
+# 500 kHz (Z = rho c0 A = 1.80 kg/ms). Its yield stress of 100 GPa is never reached, and its faces are in
+# unilateral contact, so that the bars separate as bars in contact do when the interface would carry tension.
+
+units = "mm-ms-GPa"              # mm, ms, kg; force kN, stress GPa, velocity mm/ms (= m/s), density kg/mm^3
+name = "ESRF_alu"                # results folder name
+setup = "shpb"                   # "shpb", "direct_impact" or "shtb"
+bar_model = "B"                  # A: 1D wave equation, B: Love rod, C: Pochhammer-Chree (1st mode)
+
+# ---------------------------------------------------------------- bars
+[bars]
+length_input = 1200.0            # input bar length [mm]
+length_output = 1200.0           # output bar length [mm]
+far_end_reflections = true       # true: free far ends (strain changes sign on reflection); false: absorbing
+
+[bars.material_input]            # Al 7075, nominal handbook values (assumed; the alloy was not specified)
+E = 71.7                         # Young's modulus [GPa]
+rho = 2.81e-6                    # density [kg/mm^3]
+nu = 0.33                        # Poisson's ratio (enters the dispersion of models B and C)
+radius = 6.35                    # bar radius [mm] (12.7 mm diameter)
+inner_radius = 0.0               # inner radius [mm]; 0: solid bar
+tau = 0.0                        # Kelvin-Voigt retardation time [ms]; 0: elastic bar
+
+[bars.material_output]           # Al 7075, the same as the input bar
+E = 71.7                         # Young's modulus [GPa]
+rho = 2.81e-6                    # density [kg/mm^3]
+nu = 0.33                        # Poisson's ratio (enters the dispersion of models B and C)
+radius = 6.35                    # bar radius [mm] (12.7 mm diameter)
+inner_radius = 0.0               # inner radius [mm]; 0: solid bar
+tau = 0.0                        # Kelvin-Voigt retardation time [ms]; 0: elastic bar
+
+# ---------------------------------------------------------------- strain gauges
+[gauges]
+input = [600.0]                  # gauge positions on the input bar [mm from the interface]: bar centre
+output = [100.0]                 # gauge positions on the output bar [mm from the interface]
+gauge_length = 2.0               # active gauge length [mm]
+averaging = true                 # true: records are averaged over the gauge length
+
+# ---------------------------------------------------------------- incident pulse
+[source]
+distance_from_interface = 1200.0 # where the prescribed right-going pulse is defined [mm] (impact end)
+
+[pulse]                          # trapezoid with smooth ramps; equivalent of the 250 mm striker at 15 m/s
+amplitude = -1.4848e-3           # plateau strain (negative = compression): -v/(2 c0)
+t_start = 0.02                   # pulse start at the source position [ms]
+rise = 0.004                     # 0-100 % rise time [ms]
+plateau = 0.09498                # plateau duration [ms]; 50 % to 50 % duration 2 Ls/c0 = 0.09898 ms
+fall = 0.004                     # 100-0 % fall time [ms]
+ramp = "smoothstep7"             # ramp shape: "linear" (C0), "cosine" (C1), "smoothstep7" (C3)
+
+# ---------------------------------------------------------------- specimen
+[specimen]                       # no specimen: thin disc of the bar material that couples the bars directly
+kind = "lumped"                  # "lumped": uniform stress (equilibrium), "fd": 1D finite-difference model with wave propagation
+length = 0.001                   # specimen length [mm]
+diameter = 12.7                  # specimen diameter [mm] (the bar diameter)
+# Required with kind = "fd" and refused with kind = "lumped" (typical values shown):
+# n_cells = 40                   # number of cells along the specimen
+# cfl = 0.5                      # time step as fraction of the CFL limit
+# viscosity = 0.3                # linear artificial viscosity (stability)
+# rate_filter_time = 0.5e-3      # strain-rate filter time constant [ms] (stability)
+# contact_tolerance = 1.0e-6     # a closed face opens only if the tension exceeds this * E_bar * A_bar
+
+[specimen.material]              # the bar material, elastic
+E = 71.7                         # Young's modulus [GPa]
+rho = 2.81e-6                    # density [kg/mm^3] (used by the fd model)
+sigma0 = 100.0                   # initial yield stress [GPa]; never reached, so the disc stays elastic
+H = 0.0                          # linear hardening (plastic) modulus [GPa]
+C = 0.0                          # Johnson-Cook rate sensitivity: sigma_y *= 1 + C ln(edot/edot0)
+edot0 = 1.0e-3                   # reference strain rate [1/ms]
+rate_dependent = false           # false: rate-independent plasticity
+tension_cutoff = true            # true: interfaces cannot carry tension (unilateral contact)
+failure_stress = inf             # tensile failure stress [GPa]; inf: no failure
+failure_shortening = inf         # compressive failure shortening [mm]; inf: no failure
+
+# ---------------------------------------------------------------- time axis and solver
+[sampling]
+rate = 5000.0                    # sampling rate [1/ms] (= kHz)
+duration = 1.0                   # record length [ms]
+truth_margin = 0.1               # simulated beyond the record end, then cropped [ms] (avoids end ringing)
+n_sub = 10                       # specimen substeps per sample
+pad_factor = 8                   # FFT zero padding factor (wrap-around protection)
+
+[coupling]                       # fixed-point iteration between bars and specimen
+max_iter = 80                    # maximum number of passes
+tol = 1.0e-8                     # relative change of the outgoing waves between passes
